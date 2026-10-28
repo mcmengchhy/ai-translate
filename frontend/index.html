@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Khmer AI Video Dubber & Auto-Translator | បកប្រែ និងបញ្ចូលសំឡេងជាភាសាខ្មែរ</title>
+    <meta name="description" content="AI-powered video translation and Khmer voice dubbing for Bilibili, YouTube, and local videos. Features Whisper STT, Gemini AI translation, and Edge-TTS Khmer voiceover.">
+    
+    <!-- Google Fonts: Kantumruy Pro for Khmer, Outfit & Inter for UI -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Kantumruy+Pro:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <!-- Phosphor Icons (Lightweight SVG Icons) -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="app-background">
+        <div class="glow-orb orb-1"></div>
+        <div class="glow-orb orb-2"></div>
+        <div class="glow-orb orb-3"></div>
+    </div>
+
+    <!-- Main Navigation Header -->
+    <header class="navbar">
+        <div class="nav-brand">
+            <div class="brand-logo">
+                <span class="logo-glyph">ខ្មែរ</span>
+                <span class="logo-dot"></span>
+            </div>
+            <div class="brand-info">
+                <h1>Khmer AI Video Dubber</h1>
+                <span class="brand-tag">Video Auto-Translate & Khmer Voiceover (Bilibili / Web)</span>
+            </div>
+        </div>
+
+        <div class="nav-actions">
+            <!-- Mode Tabs -->
+            <div class="mode-tabs">
+                <button class="tab-btn active" id="tab-video-btn" onclick="switchMainTab('video')">
+                    <i class="ph ph-video-camera"></i> Video Dubber
+                </button>
+                <button class="tab-btn" id="tab-text-btn" onclick="switchMainTab('text')">
+                    <i class="ph ph-translate"></i> Text Translator
+                </button>
+                <button class="tab-btn" id="tab-subtitles-btn" onclick="switchMainTab('subtitles')">
+                    <i class="ph ph-film-script"></i> Subtitles (.SRT)
+                </button>
+                <button class="tab-btn" id="tab-tools-btn" onclick="switchMainTab('tools')">
+                    <i class="ph ph-magic-wand"></i> Khmer NLP
+                </button>
+            </div>
+
+            <!-- Engine & Settings Buttons -->
+            <div class="engine-badge" id="engine-badge" title="Active Engine">
+                <span class="status-indicator active"></span>
+                <span id="current-engine-label">Auto AI</span>
+            </div>
+            
+            <button class="icon-button" id="open-settings-btn" title="Settings & API Keys" onclick="openSettingsModal()">
+                <i class="ph ph-gear"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Workspace Container -->
+    <main class="workspace-container">
+        
+        <!-- =================================================================
+             FEATURED SECTION: Video Translation & Voice Dubbing
+             ================================================================= -->
+        <section id="view-video" class="tab-view active">
+            <div class="video-dub-dashboard">
+                
+                <!-- Hero Introduction Card -->
+                <div class="video-hero-card">
+                    <div class="hero-text-block">
+                        <div class="hero-badge"><i class="ph ph-sparkle"></i> Bilibili / Video to Khmer Voice</div>
+                        <h2>Auto-Translate & Dub Any Video into Khmer (បញ្ចូលសំឡេងខ្មែរ)</h2>
+                        <p>Paste a <strong>Bilibili</strong> link, YouTube video, or upload a video. The pipeline automatically downloads the video, transcribes the speech, translates it to natural Khmer with tone preservation, synthesizes realistic Khmer voiceover, and mixes the audio!</p>
+                    </div>
+
+                    <!-- Voice & Audio Configuration Bar -->
+                    <div class="dub-config-bar">
+                        <div class="config-col">
+                            <label><i class="ph ph-user-sound"></i> Khmer Voice (សំឡេងខ្មែរ)</label>
+                            <div class="voice-picker-wrap">
+                                <select id="video-voice-select" class="styled-select">
+                                    <option value="male" selected>👨 Piseth (Male Neural) - Friendly & Clear</option>
+                                    <option value="female">👩 Sreymom (Female Neural) - Warm & Expressive</option>
+                                </select>
+                                <button class="btn-ghost btn-sm" id="preview-voice-btn" title="Test sample speech">
+                                    <i class="ph ph-speaker-high"></i> Test Voice
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="config-col">
+                            <label><i class="ph ph-sliders"></i> Audio Mixing Mode</label>
+                            <select id="video-audio-mode" class="styled-select">
+                                <option value="smart_sidechain" selected>🎚️ Smart Cinema Ducking (Mutes foreign voice during speech, keeps BGM & Sound Effects)</option>
+                                <option value="ducking">🔉 Standard Ducking (Lowers original audio to 15%)</option>
+                                <option value="replace">🔇 100% Pure Voiceover (Mute all original sound)</option>
+                            </select>
+                        </div>
+
+                        <div class="config-col">
+                            <label><i class="ph ph-clock"></i> Video Duration</label>
+                            <select id="video-duration-select" class="styled-select">
+                                <option value="90" selected>⚡ 1:30 (Quick Test Demo)</option>
+                                <option value="300">⏱️ 5 Minutes (~2 mins)</option>
+                                <option value="600">⏱️ 10 Minutes (~4 mins)</option>
+                                <option value="1800">⏱️ 30 Minutes (~12 mins)</option>
+                                <option value="3600">⏱️ 1 Hour (~25 mins)</option>
+                                <option value="7200">⏱️ 2 Hours (~45 mins)</option>
+                                <option value="18000">⏱️ 5 Hours (~1.5 hours)</option>
+                                <option value="0">🎬 Full Video (Whole Length — 5h, 10h+ Unlimited)</option>
+                            </select>
+                        </div>
+
+                        <div class="config-col">
+                            <label><i class="ph ph-chat-circle-dots"></i> Linguistic Tone</label>
+                            <select id="video-tone-select" class="styled-select">
+                                <option value="standard" selected>ទូទៅ Standard</option>
+                                <option value="casual">សាមញ្ញ Casual / Conversational</option>
+                                <option value="formal">ផ្លូវការ Formal / Documentary</option>
+                                <option value="polite">គួរសម Polite / Respectful</option>
+                            </select>
+                        </div>
+
+                        <div class="config-col checkbox-col">
+                            <label class="checkbox-label" title="Permanently render Khmer subtitles onto the video frames">
+                                <input type="checkbox" id="burn-subs-checkbox">
+                                <span>Burn Subtitles into Video</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Input Methods: Bilibili/URL or File Upload -->
+                <div class="dub-inputs-grid">
+                    <!-- Option A: Bilibili / URL -->
+                    <div class="input-card">
+                        <div class="input-card-header">
+                            <div class="input-icon-pill">
+                                <i class="ph ph-link"></i>
+                            </div>
+                            <div>
+                                <h3>Download from Bilibili or URL</h3>
+                                <p>Supports Bilibili (bilibili.com/video/BV...), YouTube, and direct video links.</p>
+                            </div>
+                        </div>
+                        
+                        <div class="url-input-group">
+                            <input 
+                                type="text" 
+                                id="video-url-input" 
+                                class="styled-input" 
+                                placeholder="Paste Bilibili link (e.g. https://www.bilibili.com/video/BV1...)"
+                            >
+                            <button class="btn-ghost btn-sm" onclick="fillBilibiliSample()" title="Fill sample URL for quick test">
+                                <i class="ph ph-lightbulb"></i> Fill BV1Foa16yEAh
+                            </button>
+                            <button class="btn-ghost btn-sm" onclick="loadCompletedDemoJob('bea1cc9b')" title="Watch rendered result for BV1Foa16yEAh" style="border-color: rgba(168, 85, 247, 0.4); color: #c084fc;">
+                                <i class="ph ph-play-circle" style="color: #a855f7;"></i> Play BV1Foa16yEAh
+                            </button>
+                        </div>
+
+                        <button class="btn-primary btn-block" id="start-url-dub-btn">
+                            <i class="ph ph-film-strip"></i> Download, Translate & Dub
+                        </button>
+                    </div>
+
+                    <!-- Option B: Upload Local Video -->
+                    <div class="input-card">
+                        <div class="input-card-header">
+                            <div class="input-icon-pill upload-pill">
+                                <i class="ph ph-upload-simple"></i>
+                            </div>
+                            <div>
+                                <h3>Upload Local Video File</h3>
+                                <p>Drag and drop any MP4, MKV, MOV, or WEBM video from your computer.</p>
+                            </div>
+                        </div>
+
+                        <div class="video-dropzone" id="video-file-dropzone">
+                            <input type="file" id="video-file-input" accept="video/mp4,video/mkv,video/webm,video/quicktime" style="display: none;">
+                            <i class="ph ph-file-video video-icon"></i>
+                            <span id="selected-video-filename">Click or Drag video here</span>
+                            <small>Auto-reads on-screen subtitles (Hardsubs) or embedded tracks</small>
+                        </div>
+
+                        <div class="subtitle-optional-container" style="margin-top: 10px; display: flex; flex-direction: column; gap: 4px;">
+                            <label style="font-size: 12px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; padding: 4px 8px; border-radius: 4px; background: rgba(255,255,255,0.03); border: 1px dashed var(--border-subtle); width: fit-content;">
+                                <i class="ph ph-subtitles"></i> Attach optional subtitle file (.srt, .vtt)
+                                <input type="file" id="video-sub-file-input" accept=".srt,.vtt,.txt" style="display: none;">
+                            </label>
+                            <span id="selected-sub-filename" style="display: none; font-size: 11px; color: #38bdf8;"></span>
+                        </div>
+
+                        <div id="video-upload-action-wrap" style="display: none; margin-top: 12px;">
+                            <button class="btn-primary btn-block" id="start-file-dub-btn">
+                                <i class="ph ph-film-strip"></i> Start Dubbing Uploaded Video
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Live Pipeline Progress Card (Appears when job starts) -->
+                <div class="pipeline-progress-card" id="video-pipeline-card" style="display: none;">
+                    <div class="pipeline-header">
+                        <div class="pipeline-info">
+                            <span class="pulsing-dot"></span>
+                            <div>
+                                <h4 id="pipeline-job-title">Processing Video...</h4>
+                                <span class="pipeline-stage" id="pipeline-stage-text">Initializing pipeline</span>
+                            </div>
+                        </div>
+                        <span class="pipeline-percent" id="pipeline-percent-text">10%</span>
+                    </div>
+
+                    <div class="pipeline-bar-wrap">
+                        <div class="pipeline-bar-fill" id="pipeline-progress-fill" style="width: 10%;"></div>
+                    </div>
+
+                    <!-- 5 Stepper Badges -->
+                    <div class="pipeline-stepper">
+                        <div class="step-badge" id="step-dl">
+                            <i class="ph ph-download-simple"></i>
+                            <span>1. Ingestion</span>
+                        </div>
+                        <div class="step-badge" id="step-stt">
+                            <i class="ph ph-subtitles"></i>
+                            <span>2. Subtitles & Audio</span>
+                        </div>
+                        <div class="step-badge" id="step-trans">
+                            <i class="ph ph-translate"></i>
+                            <span>3. 2-Step English Pivot</span>
+                        </div>
+                        <div class="step-badge" id="step-tts">
+                            <i class="ph ph-microphone"></i>
+                            <span>4. Khmer Voice (TTS)</span>
+                        </div>
+                        <div class="step-badge" id="step-mix">
+                            <i class="ph ph-faders"></i>
+                            <span>5. Audio Ducking</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Results & CapCut-Style Dubbing Studio (Appears when completed) -->
+                <div class="video-results-card" id="video-results-card" style="display: none;">
+                    
+                    <!-- Studio Top Toolbar -->
+                    <div class="studio-toolbar">
+                        <div class="studio-title-block">
+                            <div class="studio-badge-pill">
+                                <i class="ph ph-sliders"></i> CapCut Studio
+                            </div>
+                            <h3>Khmer AI Dubbing Editor <span class="khmer-title-sub">| កែសម្រួលសំឡេង និងអក្សររត់</span></h3>
+                        </div>
+
+                        <div class="studio-controls-bar">
+                            <!-- Background Sound Mixer Selector -->
+                            <div class="studio-control-group">
+                                <label for="studio-bg-volume"><i class="ph ph-speaker-high"></i> Background Sound:</label>
+                                <select id="studio-bg-volume" class="styled-select select-xs" onchange="markStudioDirty()">
+                                    <option value="-1" selected>🎚️ Smart Auto-Ducking (Mutes original voice during speech, keeps music & SFX)</option>
+                                    <option value="0.0">🔇 Mute Original Video (100% Clean Khmer Voice)</option>
+                                    <option value="0.05">🔉 Subtle Ambience (5% Faint Music)</option>
+                                    <option value="0.15">🔊 Standard Ducking (15% Original Audio)</option>
+                                    <option value="0.30">📢 High Original (30%)</option>
+                                </select>
+                            </div>
+
+                            <!-- Quick Search Cues -->
+                            <div class="studio-control-group">
+                                <input type="text" id="studio-search-input" class="styled-input input-xs" placeholder="🔍 Search dialogue or time..." style="width: 175px;" oninput="studioFilterCues(this.value)">
+                            </div>
+
+                            <!-- Magic Auto-Fix Overlaps Button -->
+                            <button type="button" class="btn-secondary btn-sm" id="btn-auto-fix-overlaps" onclick="studioAutoFixOverlaps()" title="Automatically adjust timestamps to prevent any two voices speaking at the same time">
+                                <i class="ph ph-lightning" style="color: var(--accent-amber);"></i> Auto-Fix Overlaps
+                            </button>
+
+                            <!-- AI Polish Dialogue Logic -->
+                            <button type="button" class="btn-ghost btn-sm" id="btn-polish-dialogue" onclick="studioPolishDialogue()" title="Fix machine translation blunders and make dialogue natural and logical">
+                                <i class="ph ph-magic-wand" style="color: var(--accent-purple);"></i> Polish Logic
+                            </button>
+
+                            <!-- Auto Alternate Speakers (Male / Female) -->
+                            <button type="button" class="btn-ghost btn-sm" onclick="studioAlternateSpeakers()" title="Alternate characters between Piseth (Male) and Sreymom (Female) for conversational dialogue">
+                                <i class="ph ph-users"></i> Alternate Voices
+                            </button>
+
+                            <!-- Add New Cue -->
+                            <button type="button" class="btn-ghost btn-sm" onclick="studioAddNewCue()" title="Add a new dialogue cue">
+                                <i class="ph ph-plus-circle"></i> Add Cue
+                            </button>
+
+                            <!-- Re-Render & Export Video -->
+                            <button type="button" class="btn-primary btn-sm" id="btn-studio-rerender" onclick="studioRerenderVideo()" title="Re-mix audio and render video with your edits">
+                                <i class="ph ph-film-strip"></i> Re-Render Video
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Studio 2-Column Workspace -->
+                    <div class="studio-workspace-grid">
+                        
+                        <!-- Left Column: Video Monitor & Export Downloads -->
+                        <div class="studio-monitor-col">
+                            <div class="player-container">
+                                <video id="dubbed-video-player" controls preload="metadata" playsinline class="dubbed-player">
+                                    Your browser does not support the video tag.
+                                </video>
+                            </div>
+
+                            <!-- Live Subtitle Display Box -->
+                            <div class="studio-subtitle-preview-box" id="studio-active-sub-box">
+                                <span class="sub-time-tag" id="studio-sub-time">00:00.00</span>
+                                <div class="sub-khmer-text" id="studio-sub-text">ចុច Play ដើម្បីមើលវីដេអូ ឬចុចលើ Segment ណាមួយដើម្បីកែ</div>
+                            </div>
+
+                            <!-- Video Transport & Downloads -->
+                            <div class="studio-monitor-actions">
+                                <div class="transport-buttons">
+                                    <button class="btn-ghost btn-xs" onclick="studioJumpPrevCue()" title="Previous Cue"><i class="ph ph-skip-back"></i> Prev</button>
+                                    <button class="btn-ghost btn-xs" onclick="studioTogglePlay()" title="Play/Pause"><i class="ph ph-play-pause"></i> Play/Pause</button>
+                                    <button class="btn-ghost btn-xs" onclick="studioJumpNextCue()" title="Next Cue"><i class="ph ph-skip-forward"></i> Next</button>
+                                </div>
+                                <div class="results-actions">
+                                    <a class="btn-primary btn-xs" id="download-dubbed-video-btn" download>
+                                        <i class="ph ph-download-simple"></i> Download MP4
+                                    </a>
+                                    <a class="btn-secondary btn-xs" id="download-dubbed-srt-btn" download>
+                                        <i class="ph ph-file-text"></i> Download SRT
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Right Column: Interactive CapCut Dialogue Cue Cards -->
+                        <div class="studio-timeline-col">
+                            <div class="timeline-header">
+                                <div class="timeline-search-wrap">
+                                    <i class="ph ph-magnifying-glass"></i>
+                                    <input type="text" id="studio-search-input" placeholder="Search dialogue in Khmer or original text..." oninput="studioFilterCues()">
+                                </div>
+                                <div class="timeline-meta">
+                                    <span class="badge-count" id="studio-cues-count">0 Cues</span>
+                                    <span class="badge-status" id="studio-overlap-status"><i class="ph ph-check-circle" style="color: var(--accent-emerald);"></i> Zero Collisions</span>
+                                </div>
+                            </div>
+
+                            <!-- Scrollable Cue Cards Container -->
+                            <div class="studio-cue-cards-list" id="studio-cue-cards-list">
+                                <!-- Dynamically generated by video_dubber.js -->
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- Hidden audio preview player for single segments -->
+                <audio id="segment-preview-player" style="display: none;"></audio>
+
+            </div>
+        </section>
+
+        <!-- =================================================================
+             SECTION 2: Standard Text Translation View
+             ================================================================= -->
+        <section id="view-text" class="tab-view">
+            <!-- Control Strip: Language selectors, Swap button, Tone selector -->
+            <div class="controls-strip">
+                <div class="lang-selector-group">
+                    <div class="select-wrapper">
+                        <label for="source-lang-select"><i class="ph ph-translate"></i> From</label>
+                        <select id="source-lang-select">
+                            <option value="auto">Auto Detect</option>
+                            <option value="en" selected>English</option>
+                            <option value="km">Khmer (ភាសាខ្មែរ)</option>
+                            <option value="zh">Chinese (中文)</option>
+                            <option value="fr">French (Français)</option>
+                            <option value="th">Thai (ไทย)</option>
+                            <option value="vi">Vietnamese (Tiếng Việt)</option>
+                            <option value="ja">Japanese (日本語)</option>
+                            <option value="ko">Korean (한국어)</option>
+                        </select>
+                    </div>
+
+                    <button class="swap-btn" id="swap-lang-btn" title="Swap Languages (Ctrl+S / ⌘+S)">
+                        <i class="ph ph-arrows-left-right"></i>
+                    </button>
+
+                    <div class="select-wrapper">
+                        <label for="target-lang-select"><i class="ph ph-globe"></i> To</label>
+                        <select id="target-lang-select">
+                            <option value="km" selected>Khmer (ភាសាខ្មែរ)</option>
+                            <option value="en">English</option>
+                            <option value="zh">Chinese (中文)</option>
+                            <option value="fr">French (Français)</option>
+                            <option value="th">Thai (ไทย)</option>
+                            <option value="vi">Vietnamese (Tiếng Việt)</option>
+                            <option value="ja">Japanese (日本語)</option>
+                            <option value="ko">Korean (한국어)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Tone / Politeness & Linguistic Register Selector -->
+                <div class="tone-selector-group">
+                    <label for="tone-select"><i class="ph ph-chat-circle-dots"></i> Tone / Register:</label>
+                    <div class="tone-pill-select" id="tone-pill-container">
+                        <button class="tone-pill active" data-tone="standard" title="Standard modern Khmer">ទូទៅ Standard</button>
+                        <button class="tone-pill" data-tone="formal" title="Formal, legal, or official text">ផ្លូវការ Formal</button>
+                        <button class="tone-pill" data-tone="polite" title="Polite and respectful honorifics">គួរសម Polite</button>
+                        <button class="tone-pill" data-tone="casual" title="Casual conversational spoken Khmer">សាមញ្ញ Casual</button>
+                        <button class="tone-pill" data-tone="literary" title="Aesthetic literary Khmer">អក្សរសិល្ប៍ Literary</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Translation Panes Side-by-Side -->
+            <div class="translation-grid">
+                <!-- Source Card -->
+                <div class="pane-card source-card">
+                    <div class="pane-header">
+                        <span class="pane-title" id="source-pane-title">Source Text</span>
+                        <div class="pane-header-actions">
+                            <div class="dropdown">
+                                <button class="btn-ghost btn-sm" id="presets-btn">
+                                    <i class="ph ph-sparkle"></i> Examples <i class="ph ph-caret-down"></i>
+                                </button>
+                                <div class="dropdown-menu" id="presets-menu">
+                                    <div class="dropdown-item" onclick="loadSample('greeting')">Friendly Greeting (សួស្តី)</div>
+                                    <div class="dropdown-item" onclick="loadSample('business')">Official Business Notice</div>
+                                    <div class="dropdown-item" onclick="loadSample('idiom')">Khmer Proverb / Idiom</div>
+                                    <div class="dropdown-item" onclick="loadSample('technology')">Modern Tech / AI sentence</div>
+                                </div>
+                            </div>
+                            <button class="btn-ghost btn-sm" id="clear-source-btn" title="Clear text">
+                                <i class="ph ph-x"></i> Clear
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="pane-body">
+                        <textarea 
+                            id="source-textarea" 
+                            class="khmer-text-area"
+                            placeholder="Type or paste text here to translate... (e.g. 'Good morning! Welcome to Cambodia. How can I assist you today?')"
+                            spellcheck="false"
+                        ></textarea>
+                    </div>
+
+                    <div class="pane-footer">
+                        <div class="footer-stats">
+                            <span id="source-char-count">0 characters</span>
+                            <span class="dot-separator">•</span>
+                            <span id="source-word-count">0 words</span>
+                        </div>
+                        <div class="footer-actions">
+                            <button class="btn-secondary btn-sm" id="listen-source-btn" title="Listen text-to-speech">
+                                <i class="ph ph-speaker-high"></i> Listen
+                            </button>
+                            <button class="btn-primary" id="translate-action-btn">
+                                <i class="ph ph-lightning"></i> Translate
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Target / Result Card -->
+                <div class="pane-card target-card">
+                    <div class="pane-header">
+                        <div class="target-title-wrap">
+                            <span class="pane-title" id="target-pane-title">Khmer Translation</span>
+                            <span class="engine-tag" id="result-engine-tag">Ready</span>
+                        </div>
+                        <div class="pane-header-actions">
+                            <div class="toggle-switch-wrap" title="Insert Zero-Width Space for responsive line breaking">
+                                <label class="switch">
+                                    <input type="checkbox" id="toggle-zwsp">
+                                    <span class="slider round"></span>
+                                </label>
+                                <span class="switch-label">ZWSP Line-Wrap</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="pane-body result-pane-body">
+                        <div id="target-output" class="khmer-result-area" contenteditable="false" placeholder="Translation will appear here in real-time..."></div>
+                        <div class="loading-overlay" id="loading-spinner">
+                            <div class="shimmer-pulse"></div>
+                            <span class="spinner-text">Translating with Khmer AI...</span>
+                        </div>
+                    </div>
+
+                    <div class="pane-footer">
+                        <div class="footer-stats">
+                            <span id="target-char-count">0 characters</span>
+                            <span class="dot-separator">•</span>
+                            <span id="detected-tone-info">Tone: Standard</span>
+                        </div>
+                        <div class="footer-actions">
+                            <button class="btn-secondary btn-sm" id="listen-target-btn" title="Listen translation">
+                                <i class="ph ph-speaker-high"></i> Listen
+                            </button>
+                            <button class="btn-secondary btn-sm" id="copy-target-btn" title="Copy to clipboard">
+                                <i class="ph ph-copy"></i> Copy
+                            </button>
+                            <button class="btn-secondary btn-sm" id="convert-num-btn" title="Toggle Khmer / Western Numerals">
+                                <i class="ph ph-number-circle-five"></i> ០-៩ / 0-9
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- =================================================================
+             SECTION 3: Subtitles & Document Translation View
+             ================================================================= -->
+        <section id="view-subtitles" class="tab-view">
+            <div class="doc-container">
+                <div class="doc-header-card">
+                    <div class="doc-info">
+                        <h2><i class="ph ph-film-script"></i> Subtitle & Document Batch Translator</h2>
+                        <p>Upload video subtitles (.srt, .vtt) or text/JSON files. AI translates the content while strictly keeping timestamps and formatting intact.</p>
+                    </div>
+                    <div class="upload-dropzone" id="file-dropzone">
+                        <input type="file" id="file-input" accept=".srt,.vtt,.txt,.json,.md" style="display: none;">
+                        <i class="ph ph-upload-simple upload-icon"></i>
+                        <p class="dropzone-text"><strong>Click to upload</strong> or drag & drop files here</p>
+                        <span class="dropzone-hint">Supports .SRT (Movie subtitles), .VTT, .TXT, .JSON, .MD</span>
+                    </div>
+                </div>
+
+                <!-- Subtitles Progress & Preview Table -->
+                <div class="subtitles-table-card" id="subtitles-workspace" style="display: none;">
+                    <div class="subtitles-toolbar">
+                        <div class="file-meta">
+                            <span class="file-name" id="current-filename">subtitle.srt</span>
+                            <span class="badge" id="subtitle-count">0 cues</span>
+                        </div>
+                        <div class="toolbar-actions">
+                            <button class="btn-secondary btn-sm" id="cancel-batch-btn">
+                                <i class="ph ph-trash"></i> Clear File
+                            </button>
+                            <button class="btn-primary btn-sm" id="start-batch-translate-btn">
+                                <i class="ph ph-play"></i> Translate All Cues
+                            </button>
+                            <button class="btn-secondary btn-sm" id="export-srt-btn" disabled>
+                                <i class="ph ph-download-simple"></i> Download .SRT
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Progress bar -->
+                    <div class="progress-bar-container" id="batch-progress-bar-wrap" style="display: none;">
+                        <div class="progress-bar-fill" id="batch-progress-fill" style="width: 0%;"></div>
+                    </div>
+
+                    <div class="table-scroll-container">
+                        <table class="subtitles-table">
+                            <thead>
+                                <tr>
+                                    <th width="80px">#</th>
+                                    <th width="180px">Timestamp</th>
+                                    <th>Original Text</th>
+                                    <th>Khmer Translation</th>
+                                    <th width="90px">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="subtitles-tbody">
+                                <!-- Populated dynamically by srt_parser.js -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- =================================================================
+             SECTION 4: Khmer NLP & Linguistic Tools
+             ================================================================= -->
+        <section id="view-tools" class="tab-view">
+            <div class="tools-grid">
+                <!-- Tool 1: Unicode Normalizer -->
+                <div class="tool-card">
+                    <div class="tool-card-header">
+                        <i class="ph ph-arrows-clockwise tool-icon"></i>
+                        <div>
+                            <h3>Khmer Unicode Normalizer</h3>
+                            <p>Fixes broken subscript consonant order (ជើងអក្សរ) and duplicate vowel/diacritic signs.</p>
+                        </div>
+                    </div>
+                    <textarea id="tool-norm-input" class="tool-textarea" placeholder="Enter Khmer text with possible rendering bugs..."></textarea>
+                    <div class="tool-actions">
+                        <button class="btn-primary btn-sm" onclick="runKhmerTool('normalize')">Normalize Unicode</button>
+                        <button class="btn-secondary btn-sm" onclick="runKhmerTool('add_zwsp')">Inject ZWSP</button>
+                        <button class="btn-ghost btn-sm" onclick="runKhmerTool('strip_zwsp')">Remove ZWSP</button>
+                    </div>
+                    <div class="tool-output-box" id="tool-norm-output">Normalized text will appear here...</div>
+                </div>
+
+                <!-- Tool 2: Numeral Converter -->
+                <div class="tool-card">
+                    <div class="tool-card-header">
+                        <i class="ph ph-number-circle-five tool-icon"></i>
+                        <div>
+                            <h3>Numeral Transliteration (លេខខ្មែរ)</h3>
+                            <p>Instantly convert between traditional Khmer numerals (០-៩) and Western digits (0-9).</p>
+                        </div>
+                    </div>
+                    <textarea id="tool-num-input" class="tool-textarea" placeholder="Paste text containing numbers e.g. 'ឆ្នាំ ២០២៦ តម្លៃ ១៥០ ដុល្លារ'"></textarea>
+                    <div class="tool-actions">
+                        <button class="btn-primary btn-sm" onclick="runKhmerTool('to_arabic_num')">Convert to 0-9</button>
+                        <button class="btn-secondary btn-sm" onclick="runKhmerTool('to_khmer_num')">Convert to ០-៩</button>
+                    </div>
+                    <div class="tool-output-box" id="tool-num-output">Converted result will appear here...</div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Settings Modal -->
+    <div class="modal-backdrop" id="settings-modal">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3><i class="ph ph-gear"></i> Translator Configuration</h3>
+                <button class="icon-button" onclick="closeSettingsModal()"><i class="ph ph-x"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="setting-engine-select">Preferred AI Translation Engine</label>
+                    <select id="setting-engine-select">
+                        <option value="auto">Auto (Gemini AI if key present, else Free Engine)</option>
+                        <option value="gemini">Google Gemini AI (Recommended for high nuance & Khmer tone)</option>
+                        <option value="free">Free Instant Engine (No API key needed)</option>
+                        <option value="openai">OpenAI / Local Ollama</option>
+                    </select>
+                </div>
+
+                <div class="form-group" id="gemini-key-group">
+                    <label for="setting-gemini-key">
+                        Gemini API Key
+                        <span class="label-badge">Free Tier Available</span>
+                    </label>
+                    <input type="password" id="setting-gemini-key" placeholder="AIzaSy...">
+                    <small>Get a free key from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">Google AI Studio</a>. Saved locally in your browser.</small>
+                </div>
+
+                <div class="form-group" id="gemini-model-group">
+                    <label for="setting-gemini-model">Gemini Model</label>
+                    <select id="setting-gemini-model">
+                        <option value="gemini-2.0-flash">gemini-2.0-flash (Fastest & high quality)</option>
+                        <option value="gemini-1.5-flash">gemini-1.5-flash (Standard)</option>
+                        <option value="gemini-1.5-pro">gemini-1.5-pro (High reasoning)</option>
+                    </select>
+                </div>
+
+                <div class="form-group" id="openai-key-group" style="display: none;">
+                    <label for="setting-openai-key">OpenAI / Groq API Key</label>
+                    <input type="password" id="setting-openai-key" placeholder="sk-...">
+                    <label for="setting-openai-url" style="margin-top: 8px;">Base URL (Optional, for Ollama: http://localhost:11434/v1)</label>
+                    <input type="text" id="setting-openai-url" placeholder="https://api.openai.com/v1">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeSettingsModal()">Cancel</button>
+                <button class="btn-primary" onclick="saveSettings()">Save Preferences</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast"></div>
+
+    <script src="/static/js/tools.js"></script>
+    <script src="/static/js/srt_parser.js"></script>
+    <script src="/static/js/video_dubber.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
