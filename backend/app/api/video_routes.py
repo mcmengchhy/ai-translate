@@ -35,6 +35,10 @@ class VideoDubUrlRequest(BaseModel):
 class VoicePreviewRequest(BaseModel):
     text: str = Field(default="សួស្តីបងប្អូនទាំងអស់គ្នា សូមស្វាគមន៍មកកាន់វីដេអូបកប្រែជាភាសាខ្មែរ")
     voice_type: str = Field(default="male")
+    rate: str = Field(default="auto", description="Edge-TTS rate e.g. '+10%' or 'auto'")
+    pitch: str = Field(default="auto", description="Edge-TTS pitch e.g. '+2Hz' or 'auto'")
+    volume: str = Field(default="auto", description="Edge-TTS volume e.g. '+5%' or 'auto'")
+    enhance: bool = Field(default=True, description="Apply EQ + loudnorm post-processing")
 
 
 class SegmentUpdateRequest(BaseModel):
@@ -45,6 +49,10 @@ class SegmentPreviewRequest(BaseModel):
     segment_id: int
     text: str
     voice_type: str = "male"
+    rate: str = "auto"
+    pitch: str = "auto"
+    volume: str = "auto"
+    enhance: bool = True
 
 
 class PolishDialogueRequest(BaseModel):
@@ -138,7 +146,14 @@ async def check_pipeline_status(job_id: str):
 async def preview_khmer_voice(req: VoicePreviewRequest):
     out_file = DUBBED_DIR / f"preview_{req.voice_type}.mp3"
     try:
-        await synthesize_khmer_clip(req.text, str(out_file), voice_type=req.voice_type)
+        await synthesize_khmer_clip(
+            req.text, str(out_file),
+            voice_type=req.voice_type,
+            rate=req.rate,
+            pitch=req.pitch,
+            volume=req.volume,
+            enhance=req.enhance,
+        )
         return {"audio_url": f"/static/dubbed/{out_file.name}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Voice synthesis error: {e}")
@@ -187,7 +202,14 @@ async def preview_single_segment_audio(job_id: str, req: SegmentPreviewRequest):
     out_file = DUBBED_DIR / preview_name
 
     try:
-        await synthesize_khmer_clip(clean_text, str(out_file), voice_type=req.voice_type)
+        await synthesize_khmer_clip(
+            clean_text, str(out_file),
+            voice_type=req.voice_type,
+            rate=req.rate,
+            pitch=req.pitch,
+            volume=req.volume,
+            enhance=req.enhance,
+        )
         dur = get_media_duration(str(out_file))
 
         # Also find and update the segment's audio_file in the job
@@ -310,7 +332,13 @@ async def rerender_dubbed_video(job_id: str, req: JobRerenderRequest):
         if not audio_file or not Path(audio_file).exists() or seg.get("_dirty"):
             seg_file = audio_dir / f"seg_{seg['id']}_{v_type}.mp3"
             if text:
-                await synthesize_khmer_clip(text, str(seg_file), voice_type=v_type)
+                seg_dur = float(seg.get("end", 0)) - float(seg.get("start", 0))
+                await synthesize_khmer_clip(
+                    text, str(seg_file),
+                    voice_type=v_type,
+                    seg_duration=seg_dur if seg_dur > 0 else None,
+                    enhance=True,
+                )
                 seg["audio_file"] = str(seg_file)
                 seg.pop("_dirty", None)
 

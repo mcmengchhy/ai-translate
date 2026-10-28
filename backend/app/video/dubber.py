@@ -173,7 +173,14 @@ def build_master_audio_track(
             filter_parts.append(f"[{i}:a]adelay={start_ms}|{start_ms}[d{i}]")
             mix_inputs.append(f"[d{i}]")
 
-        filter_str = ";".join(filter_parts) + f";{''.join(mix_inputs)}amix=inputs={len(valid_clips)+1}:normalize=0[voice_out]"
+        # Mix then apply a gentle master EQ pass on the final voice track:
+        # - highpass 80Hz: remove sub-bass rumble from TTS
+        # - loudnorm -16 LUFS: ensure consistent voice level across all clips
+        filter_str = (
+            ";".join(filter_parts)
+            + f";{''.join(mix_inputs)}amix=inputs={len(valid_clips)+1}:normalize=0[mixed]"
+            + ";[mixed]highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=7[voice_out]"
+        )
         cmd_master = ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_str, "-map", "[voice_out]", str(output_path)]
         logger.info(f"Generating collision-free master voice track ({len(valid_clips)} cues)...")
         subprocess.run(cmd_master, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -276,16 +283,17 @@ async def assemble_dubbed_video(
         else:
             audio_filter = f"[0:a]volume={bg_volume:.3f}[bg];[1:a]volume=1.1[khmer];[bg][khmer]amix=inputs=2:duration=first[aout]"
     elif audio_mode in ("smart_sidechain", "smart"):
-        audio_filter = "[0:a][1:a]sidechaincompress=threshold=0.015:ratio=20:attack=10:release=250[bg];[bg][1:a]amix=inputs=2:duration=first[aout]"
+        # Cinema-quality: smooth sidechain ducking (fast attack, natural 400ms release)
+        audio_filter = "[0:a][1:a]sidechaincompress=threshold=0.012:ratio=18:attack=5:release=400[bg];[bg][1:a]amix=inputs=2:duration=first[aout]"
     elif audio_mode in ("mute", "replace"):
         # Mute original completely: only Khmer dubbing audible!
         audio_filter = "[1:a]volume=1.0[aout]"
     elif audio_mode == "duck_subtle":
-        # 5% subtle background audio
-        audio_filter = "[0:a]volume=0.05[bg];[1:a]volume=1.1[khmer];[bg][khmer]amix=inputs=2:duration=first[aout]"
+        # 5% subtle background audio with normalized Khmer voice
+        audio_filter = "[0:a]volume=0.05[bg];[1:a]volume=1.1,loudnorm=I=-16:TP=-1.5[khmer];[bg][khmer]amix=inputs=2:duration=first[aout]"
     else:
-        # Default: Smart Sidechain Ducking (Cinema Quality)
-        audio_filter = "[0:a][1:a]sidechaincompress=threshold=0.015:ratio=20:attack=10:release=250[bg];[bg][1:a]amix=inputs=2:duration=first[aout]"
+        # Default: Cinema-quality sidechain ducking (smooth 5ms attack, 400ms release)
+        audio_filter = "[0:a][1:a]sidechaincompress=threshold=0.012:ratio=18:attack=5:release=400[bg];[bg][1:a]amix=inputs=2:duration=first[aout]"
 
     if burn_subtitles:
         final_cmd.extend([
@@ -296,7 +304,7 @@ async def assemble_dubbed_video(
             "-map", "2:s",
             "-c:v", "copy",
             "-c:a", "aac",
-            "-b:a", "192k",
+            "-b:a", "256k",
             "-c:s", "mov_text",
             "-metadata:s:s:0", "language=khm",
             str(final_video_path)
@@ -308,7 +316,7 @@ async def assemble_dubbed_video(
             "-map", "[aout]",
             "-c:v", "copy",
             "-c:a", "aac",
-            "-b:a", "192k",
+            "-b:a", "256k",
             str(final_video_path)
         ])
 
