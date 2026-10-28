@@ -107,9 +107,19 @@ async def run_video_dubbing_pipeline(
         job["progress"] = 25
 
         # Step 2: Audio Transcription & Subtitle Reading (Hardsubs / Softsubs)
-        job["stage"] = "Reading subtitles & transcribing speech"
+        job["stage"] = "Transcribing speech audio"
         logger.info(f"Transcribing and reading on-screen subtitles for: {video_path}")
-        transcription = await transcribe_video_audio(video_path, external_subtitle_path=subtitle_file_path)
+
+        def _on_ocr_progress(done, total):
+            job["progress"] = 25 + int(done / total * 23)
+            job["stage"] = f"Reading on-screen hardsubs ({done}/{total})"
+            _save_job(job_id)
+
+        transcription = await transcribe_video_audio(
+            video_path,
+            external_subtitle_path=subtitle_file_path,
+            on_ocr_progress=_on_ocr_progress,
+        )
         segments = transcription["segments"]
         job["detected_language"] = transcription.get("language", "auto")
         job["subtitle_source"] = transcription.get("source", "speech_and_hardsub_ocr")
@@ -129,7 +139,7 @@ async def run_video_dubbing_pipeline(
         effective_api_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
 
         if effective_api_key:
-            batch_size = 15
+            batch_size = 30
             for b in range(0, len(segments), batch_size):
                 b_chunk = segments[b : b + batch_size]
                 try:
@@ -138,9 +148,20 @@ async def run_video_dubbing_pipeline(
                     logger.warning(f"Gemini batch failed: {e}. Falling back to cluster translation...")
                     await translate_dialogue_clusters_free(b_chunk, job["detected_language"], tone=tone)
                 job["progress"] = 50 + int((min(b + batch_size, len(segments)) / len(segments)) * 20)
+                job["stage"] = f"Translating dialogue ({min(b + batch_size, len(segments))}/{len(segments)})"
                 _save_job(job_id)
         else:
-            await translate_dialogue_clusters_free(segments, job["detected_language"], tone=tone)
+            def _on_trans_progress(done_chunks, total_chunks):
+                job["progress"] = 50 + int(done_chunks / total_chunks * 20)
+                job["stage"] = f"Translating dialogue ({done_chunks}/{total_chunks})"
+                _save_job(job_id)
+
+            await translate_dialogue_clusters_free(
+                segments,
+                job["detected_language"],
+                tone=tone,
+                on_progress=_on_trans_progress,
+            )
 
         batch_polish_segments(segments)
         job["segments"] = segments

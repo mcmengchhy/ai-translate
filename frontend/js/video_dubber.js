@@ -183,11 +183,17 @@ async function handleFileDubbing() {
     }
 }
 
-// Poll Job Status
+// Poll Job Status with overlap protection
+let isPollingActive = false;
+
 function startPollingJobStatus(jobId) {
     if (pollInterval) clearInterval(pollInterval);
+    isPollingActive = false;
 
     pollInterval = setInterval(async () => {
+        if (isPollingActive) return; // Prevent request pile-up
+        isPollingActive = true;
+
         try {
             const resp = await fetch(`/api/video/status/${jobId}`);
             if (!resp.ok) return;
@@ -206,6 +212,8 @@ function startPollingJobStatus(jobId) {
             }
         } catch (err) {
             console.error("Polling error:", err);
+        } finally {
+            isPollingActive = false;
         }
     }, 1500);
 }

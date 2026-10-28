@@ -53,6 +53,7 @@ async def transcribe_video_audio(
     video_path: str,
     language: Optional[str] = None,
     external_subtitle_path: Optional[str] = None,
+    on_ocr_progress=None,
 ) -> Dict[str, Any]:
     """
     Extracts speech timestamps and dialogue content from video.
@@ -117,7 +118,11 @@ async def transcribe_video_audio(
             # 4. Enhance speech segments with on-screen burned-in subtitle OCR (Hardsubs)
             if segments_list:
                 logger.info(f"Checking for on-screen burned-in subtitles (Hardsubs) across {len(segments_list)} segments...")
-                segments_list = enhance_segments_with_hardsubs(video_path, segments_list)
+                segments_list = enhance_segments_with_hardsubs(
+                    video_path,
+                    segments_list,
+                    progress_callback=on_ocr_progress
+                )
 
             return {
                 "language": info.language,

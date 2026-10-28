@@ -172,9 +172,10 @@ def enhance_segments_with_hardsubs(
     Enhances Whisper speech segments with on-screen subtitle OCR text.
     
     1. Probes for burned-in subtitles (hardsubs).
-    2. If found, reads the on-screen Chinese characters at the midpoint of each speech segment.
-    3. Replaces noisy ASR text with exact ground-truth subtitle characters.
-    4. Merges consecutive segments that share the same subtitle text line.
+    2. If found, reads on-screen characters at the midpoint of each speech segment.
+    3. Uses frame-delta caching to skip OCR when consecutive cues share the same subtitle frame.
+    4. Replaces noisy ASR text with exact ground-truth subtitle characters.
+    5. Merges consecutive segments that share the same subtitle text line.
     """
     if not speech_segments:
         return speech_segments
@@ -195,23 +196,55 @@ def enhance_segments_with_hardsubs(
             logger.info("No burned-in subtitles detected; proceeding with Whisper audio transcription.")
             return speech_segments
 
-        logger.info(f"Reading on-screen hardsubs across {len(speech_segments)} dialogue segments...")
+        total_cues = len(speech_segments)
+        logger.info(f"Reading on-screen hardsubs across {total_cues} dialogue segments with frame caching...")
+
+        # Focus crop on bottom 22% height and central 80% width where subtitles are rendered
         crop_top = int(h * 0.76)
+        crop_bottom = int(h * 0.97)
+        crop_left = int(w * 0.10)
+        crop_right = int(w * 0.90)
 
         enhanced = []
+        prev_crop_small = None
+        prev_ocr_text = ""
+
+        import numpy as np
+
         for i, seg in enumerate(speech_segments):
             mid_t = (seg["start"] + seg["end"]) / 2.0
-            cap.set(cv2.CAP_PROP_POS_MSEC, mid_t * 1000.0)
-            ret, frame = cap.read()
+            target_msec = mid_t * 1000.0
+
+            # Seeking optimization: if next target is close ahead (<1.5s), grab forward instead of full keyframe seek
+            cur_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+            diff_msec = target_msec - cur_msec
+            if 0 < diff_msec < 1500:
+                # Fast forward a few frames
+                while cap.get(cv2.CAP_PROP_POS_MSEC) < target_msec - 40:
+                    if not cap.grab():
+                        break
+                ret, frame = cap.read()
+            else:
+                cap.set(cv2.CAP_PROP_POS_MSEC, target_msec)
+                ret, frame = cap.read()
 
             ocr_text = ""
             if ret and frame is not None:
-                crop = frame[crop_top:h, :]
-                res, _ = ocr(crop)
-                if res:
-                    valid_lines = [r[1].strip() for r in res if r[2] > 0.6 and len(r[1].strip()) > 0]
-                    if valid_lines:
-                        ocr_text = " ".join(valid_lines)
+                crop = frame[crop_top:crop_bottom, crop_left:crop_right]
+                # Downscaled thumbnail for ultra-fast frame change detection
+                crop_small = cv2.resize(crop, (160, 32), interpolation=cv2.INTER_AREA)
+
+                # If frame is nearly identical to previous cue (< 3.0 mean pixel delta), reuse previous OCR
+                if prev_crop_small is not None and np.mean(np.abs(crop_small.astype(np.float32) - prev_crop_small.astype(np.float32))) < 3.0:
+                    ocr_text = prev_ocr_text
+                else:
+                    res, _ = ocr(crop)
+                    if res:
+                        valid_lines = [r[1].strip() for r in res if r[2] > 0.6 and len(r[1].strip()) > 0]
+                        if valid_lines:
+                            ocr_text = " ".join(valid_lines)
+                    prev_crop_small = crop_small
+                    prev_ocr_text = ocr_text
 
             asr_text = seg.get("text", "")
             if ocr_text and len(ocr_text) >= 2:
@@ -222,11 +255,11 @@ def enhance_segments_with_hardsubs(
                 seg["ocr_detected"] = False
 
             enhanced.append(seg)
-            if progress_callback and i % 25 == 0:
-                progress_callback(i, len(speech_segments))
+            if progress_callback and (i % 15 == 0 or i == total_cues - 1):
+                progress_callback(i + 1, total_cues)
 
         # Step 2: Merge adjacent speech segments that share the exact same subtitle line
-        # (This combines broken speech fragments into complete, logical cinematic dialogue sentences)
+        # (Combines broken speech fragments into complete, logical cinematic dialogue sentences)
         merged = []
         for seg in enhanced:
             if not merged:

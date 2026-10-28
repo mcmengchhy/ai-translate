@@ -337,7 +337,7 @@ async def rerender_dubbed_video(job_id: str, req: JobRerenderRequest):
                     text, str(seg_file),
                     voice_type=v_type,
                     seg_duration=seg_dur if seg_dur > 0 else None,
-                    enhance=True,
+                    enhance=False,
                 )
                 seg["audio_file"] = str(seg_file)
                 seg.pop("_dirty", None)
