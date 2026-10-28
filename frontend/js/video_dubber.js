@@ -98,7 +98,7 @@ async function handleUrlDubbing() {
     const tone = document.getElementById('video-tone-select').value;
     const audioMode = document.getElementById('video-audio-mode').value;
     const burnSubtitles = document.getElementById('burn-subs-checkbox').checked;
-    const maxDur = parseInt(document.getElementById('video-duration-select')?.value ?? '90', 10);
+    const maxDur = parseInt(document.getElementById('video-duration-select')?.value ?? '0', 10);
     const settings = getSavedSettings();
 
     setPipelineUIState('active');

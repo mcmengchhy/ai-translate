@@ -149,9 +149,22 @@ async def run_video_dubbing_pipeline(
 
         # Step 4: Khmer Speech Synthesis (TTS)
         job["stage"] = "Synthesizing Khmer voiceover"
-        logger.info(f"Generating Khmer speech ({voice_type})...")
+        logger.info(f"Generating Khmer speech ({voice_type}) for {len(segments)} segments...")
         audio_dir = Path(video_path).parent / f"voice_{job_id}"
-        segments = await synthesize_segments(segments, audio_dir, voice_type=voice_type)
+
+        # Synthesize with live progress updates every batch of segments
+        # Per-clip FFmpeg EQ is skipped (enhance=False) — EQ is applied once
+        # on the full master voice track in dubber.py which is far faster.
+        segments = await synthesize_segments(
+            segments, audio_dir,
+            voice_type=voice_type,
+            max_concurrency=20,
+            enhance=False,
+            on_progress=lambda done, total: (
+                job.update({"progress": 70 + int(done / total * 13), "stage": f"Synthesizing voice ({done}/{total})"}),
+                _save_job(job_id),
+            ),
+        )
         job["progress"] = 85
 
         # Step 5: Audio Mixing & Video Dubbing

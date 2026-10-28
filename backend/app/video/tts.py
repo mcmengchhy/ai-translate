@@ -184,6 +184,7 @@ async def synthesize_segments(
     voice_type: str = "male",
     max_concurrency: int = 8,
     enhance: bool = True,
+    on_progress=None,
 ) -> List[Dict[str, Any]]:
     """
     Synthesizes speech for a list of timestamped segments in parallel.
@@ -191,15 +192,27 @@ async def synthesize_segments(
     Each segment gets individually-tuned prosody (rate / pitch / volume)
     based on its translated text and its target time slot duration.
     Uses an asyncio Semaphore to cap parallel Edge-TTS calls.
+
+    Args:
+        on_progress: Optional callable(done: int, total: int) — called after
+                     each segment finishes so callers can report live progress.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     voice = KHMER_VOICES.get(voice_type.lower(), KHMER_VOICES["male"])
     semaphore = asyncio.Semaphore(max_concurrency)
+    total = len(segments)
+    done_count = 0
+    lock = asyncio.Lock()
 
     async def _synth_one(seg: Dict[str, Any]):
+        nonlocal done_count
         text = seg.get("translation") or seg.get("text", "")
         if not text.strip():
             seg["audio_file"] = None
+            async with lock:
+                done_count += 1
+                if on_progress:
+                    on_progress(done_count, total)
             return
 
         clean = normalize_khmer_unicode(text)
@@ -233,6 +246,11 @@ async def synthesize_segments(
             except Exception as e:
                 logger.error(f"Error synthesizing segment {seg['id']}: {e}")
                 seg["audio_file"] = None
+
+        async with lock:
+            done_count += 1
+            if on_progress:
+                on_progress(done_count, total)
 
     tasks = [_synth_one(seg) for seg in segments]
     await asyncio.gather(*tasks)

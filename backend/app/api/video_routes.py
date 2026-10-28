@@ -27,7 +27,7 @@ class VideoDubUrlRequest(BaseModel):
     tone: str = Field(default="standard", description="Linguistic tone: standard, casual, formal, polite")
     audio_mode: str = Field(default="ducking", description="'ducking' (original audio lowered) or 'replace' (voice only)")
     burn_subtitles: bool = Field(default=False, description="Burn Khmer subtitles into video frames")
-    max_duration: Optional[int] = Field(default=90, description="Duration in seconds to dub (e.g. 90 for fast test, 300 for 5m, 0 for full video)")
+    max_duration: Optional[int] = Field(default=0, description="Duration in seconds to dub (e.g. 90 for fast test, 300 for 5m, 0 for full video)")
     api_key: Optional[str] = Field(default=None, description="Optional Gemini API key")
     subtitle_file_path: Optional[str] = Field(default=None, description="Optional path to custom subtitle file")
 
