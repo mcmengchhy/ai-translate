@@ -103,6 +103,8 @@ def _enhance_audio_clip(input_path: str) -> str:
     tmp_path = in_path.parent / f"_eq_{in_path.name}"
 
     eq_chain = (
+        "silenceremove=start_periods=1:start_duration=0.02:start_threshold=-40dB,"
+        "areverse,silenceremove=start_periods=1:start_duration=0.02:start_threshold=-40dB,areverse,"
         "highpass=f=80,"
         "equalizer=f=2500:width_type=o:width=2.0:g=3,"
         "equalizer=f=250:width_type=o:width=1.5:g=2,"

@@ -90,14 +90,23 @@ def generate_srt_file(segments: List[Dict[str, Any]], output_path: str) -> str:
 
 def schedule_non_overlapping_clips(
     segments: List[Dict[str, Any]],
-    min_gap: float = 0.20,  # 200ms natural breathing pause between speech cues
+    min_gap: float = 0.05,
+    temp_dir: Optional[Path] = None,
+    max_speed: float = 1.35,
 ) -> List[Dict[str, Any]]:
     """
-    Guarantees that NO TWO audio clips ever play simultaneously.
-    Preserves 100% natural studio voice quality with zero atempo squashing or distortion.
+    Cinema Lip-Sync Sequencer:
+    1. Anchors each dialogue cue directly to the character's ground-truth mouth movement (target_start).
+    2. Measures available window before the next character speaks (next_start - target_start).
+    3. If translation audio is longer than the mouth slot, applies FFmpeg atempo (up to max_speed)
+       so the dialogue finishes before the next character speaks.
+    4. Eliminates cumulative drift: each line starts on-cue when the character's mouth moves.
     """
     valid_clips = []
     current_end_time = 0.0
+
+    if temp_dir:
+        temp_dir.mkdir(parents=True, exist_ok=True)
 
     for i, seg in enumerate(segments):
         audio_file = seg.get("audio_file")
@@ -108,24 +117,60 @@ def schedule_non_overlapping_clips(
         if raw_dur <= 0:
             continue
 
-        orig_start = float(seg.get("start", 0.0))
+        # Ground-truth mouth anchor: preserve original start and end
+        if "target_start" not in seg:
+            seg["target_start"] = float(seg.get("orig_start") or seg.get("start", 0.0))
+        if "target_end" not in seg:
+            seg["target_end"] = float(seg.get("orig_end") or seg.get("end", seg["target_start"] + 1.0))
 
-        # 1. Prevent collision with previous clip:
-        # Start at earliest when previous finishes + natural breathing space (min_gap)
-        effective_start = max(orig_start, round(current_end_time + min_gap, 2))
+        target_start = float(seg["target_start"])
+        target_end = float(seg["target_end"])
 
-        # 2. Natural studio voice preservation:
-        # Always play the pristine, uncompressed studio audio directly (zero atempo distortion)
+        # Determine available time window before next character speaks
+        if i + 1 < len(segments):
+            next_seg = segments[i + 1]
+            next_start = float(next_seg.get("target_start") or next_seg.get("orig_start") or next_seg.get("start", 0.0))
+            if next_start > target_start and (next_start - target_start) <= 4.0:
+                available_window = max(0.6, next_start - target_start - 0.04)
+            else:
+                available_window = max(target_end - target_start + 0.6, 1.0)
+        else:
+            available_window = max(target_end - target_start + 0.6, 1.0)
+
+        # Lip-sync tempo fitting: if speech is longer than the visual window, fit it smoothly
+        effective_audio_path = audio_file
         actual_dur = raw_dur
 
+        if raw_dur > available_window and temp_dir:
+            speed = raw_dur / available_window
+            clamped_speed = min(max_speed, max(1.0, speed))
+            if clamped_speed >= 1.04:
+                fitted_path = temp_dir / f"fitted_lip_{seg['id']}_{clamped_speed:.2f}.wav"
+                try:
+                    subprocess.run([
+                        "ffmpeg", "-y", "-i", str(audio_file),
+                        "-filter:a", f"atempo={clamped_speed:.3f}",
+                        "-c:a", "pcm_s16le", "-ar", "48000", str(fitted_path)
+                    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    effective_audio_path = str(fitted_path)
+                    actual_dur = get_media_duration(str(fitted_path))
+                except Exception as e:
+                    logger.warning(f"atempo failed for segment {seg['id']}: {e}")
+
+        # Mouth-Anchor: Always start at character's mouth movement
+        effective_start = target_start
+        if effective_start < current_end_time:
+            # Minor micro-adjustment if previous clip slightly overlapped
+            effective_start = round(current_end_time + 0.02, 2)
+
         valid_clips.append({
-            "path": audio_file,
+            "path": effective_audio_path,
             "start": round(effective_start, 2),
             "duration": round(actual_dur, 2),
             "seg_id": seg.get("id"),
         })
 
-        # Update segment's actual start and end for subtitle synchronization
+        # Set playback and subtitle sync timestamps
         seg["start"] = round(effective_start, 2)
         seg["end"] = round(effective_start + actual_dur, 2)
 
@@ -262,8 +307,8 @@ async def assemble_dubbed_video(
     temp_dir = DUBBED_DIR / f"temp_{video.stem}"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Schedule clips with collision-free sequencer (no two voices overlap, natural breathing space)
-    valid_clips = schedule_non_overlapping_clips(segments, min_gap=0.20)
+    # 1. Schedule clips with Lip-Sync sequencer (mouth-aligned, time-fitted, zero cumulative drift)
+    valid_clips = schedule_non_overlapping_clips(segments, temp_dir=temp_dir, max_speed=1.45)
 
     # 2. Build master voice track with batching support for 5h - 10h+ videos
     master_voice_path = temp_dir / "master_khmer_voice.wav"

@@ -190,6 +190,8 @@ async def run_video_dubbing_pipeline(
         segments = deduped
         for idx, s in enumerate(segments, start=1):
             s["id"] = idx
+            s["target_start"] = float(s.get("target_start", s["start"]))
+            s["target_end"] = float(s.get("target_end", s["end"]))
 
         job["segments"] = segments
         job["progress"] = 70

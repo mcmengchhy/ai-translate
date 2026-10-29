@@ -257,7 +257,8 @@ async def auto_fix_job_overlaps(job_id: str):
     if not segments:
         return {"status": "ok", "segments": []}
 
-    schedule_non_overlapping_clips(segments, min_gap=0.08)
+    temp_dir = ROOT_PROJECT_DIR / "storage" / "dubbed" / f"temp_{job_id}"
+    schedule_non_overlapping_clips(segments, temp_dir=temp_dir, max_speed=1.45)
     _save_job(job_id)
 
     return {
