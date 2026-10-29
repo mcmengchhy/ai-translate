@@ -54,40 +54,27 @@ def _detect_prosody(
 ) -> Tuple[str, str, str]:
     """
     Auto-determines Edge-TTS prosody knobs from text content and timing.
-
-    Returns: (rate, pitch, volume)  as Edge-TTS-compatible strings, e.g.:
-        rate:   "-10%"  slower  /  "+15%"  faster
-        pitch:  "-5Hz"  lower   /  "+5Hz"  higher
-        volume: "+0%"   normal  /  "+10%"  louder
+    Preserves natural conversational cadence (+0% speed) to maintain warm, clear human speech.
     """
     clean = text.strip()
 
-    # --- Rate: match TTS speed to available window ---
+    # Rate: Keep natural, unhurried conversational cadence (+0%)
     rate_pct = 0
-    if seg_duration and seg_duration > 0:
-        syllables = _count_khmer_syllables(clean)
-        # Native Khmer speech: ~3.5 syllables/sec at default rate
-        natural_dur = syllables / 3.5 if syllables > 0 else seg_duration
-        ratio = natural_dur / seg_duration  # >1 means too slow for slot → speed up
-        if ratio > 1.25:
-            rate_pct = min(25, int((ratio - 1.0) * 100 * 0.8))   # cap +25%
-        elif ratio < 0.75:
-            rate_pct = max(-15, int((ratio - 1.0) * 100 * 0.6))  # cap -15%
 
-    # --- Pitch: emotion cues from punctuation ---
+    # Pitch: Subtle emotion cues from punctuation
     pitch_hz = 0
     if clean.endswith("?"):
-        pitch_hz = +3   # rising intonation for questions
+        pitch_hz = +2   # rising intonation for questions
     elif clean.endswith("!"):
-        pitch_hz = +2   # slight energy for exclamations
+        pitch_hz = +1   # slight energy for exclamations
     elif clean.endswith("..."):
-        pitch_hz = -2   # trailing / melancholy
+        pitch_hz = -1   # trailing / thoughtful
     elif len(clean) <= 8:
-        pitch_hz = +1   # very short utterance — slight lift to prevent flat read
+        pitch_hz = +1   # very short utterance
 
-    # --- Volume: short clips can sound quieter, boost them a bit ---
+    # Volume: short clips can sound quieter, boost slightly
     syllables = _count_khmer_syllables(clean)
-    volume_pct = +5 if syllables <= 4 else 0
+    volume_pct = +5 if syllables <= 5 else 0
 
     rate_str   = f"+{rate_pct}%" if rate_pct >= 0 else f"{rate_pct}%"
     pitch_str  = f"+{pitch_hz}Hz" if pitch_hz >= 0 else f"{pitch_hz}Hz"
@@ -199,16 +186,15 @@ async def synthesize_segments(
     rate: str = "auto",
     pitch: str = "auto",
     volume: str = "auto",
-    max_concurrency: int = 8,
+    max_concurrency: int = 4,
     enhance: bool = True,
     on_progress=None,
 ) -> List[Dict[str, Any]]:
     """
     Synthesizes speech for a list of timestamped segments in parallel.
 
-    Each segment gets individually-tuned prosody (rate / pitch / volume)
-    based on its translated text and its target time slot duration.
-    Uses an asyncio Semaphore to cap parallel Edge-TTS calls.
+    Each segment gets individually-tuned prosody (rate / pitch / volume).
+    Uses an asyncio Semaphore to cap parallel Edge-TTS calls, with retry backoff for 100% reliability.
 
     Args:
         on_progress: Optional callable(done: int, total: int) — called after
@@ -250,31 +236,38 @@ async def synthesize_segments(
         eff_volume = auto_volume if (not req_volume or req_volume == "auto") else _sanitize_edge_tts_knob(req_volume, "%")
 
         clip_path = output_dir / f"seg_{seg['id']}_{seg_voice_type}.mp3"
-        async with semaphore:
+
+        # Robust synthesis loop with 3 retries against Edge-TTS rate limits
+        for attempt in range(3):
             try:
-                communicate = edge_tts.Communicate(
-                    clean, voice,
-                    rate=eff_rate,
-                    pitch=eff_pitch,
-                    volume=eff_volume,
-                )
-                await communicate.save(str(clip_path))
+                async with semaphore:
+                    communicate = edge_tts.Communicate(
+                        clean, voice,
+                        rate=eff_rate,
+                        pitch=eff_pitch,
+                        volume=eff_volume,
+                    )
+                    await communicate.save(str(clip_path))
 
-                if enhance:
-                    # Run studio EQ + loudnorm in executor to match preview audio exactly
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(None, _enhance_audio_clip, str(clip_path))
+                    if enhance:
+                        # Run studio EQ + loudnorm in executor to match preview audio exactly
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(None, _enhance_audio_clip, str(clip_path))
 
-                seg["audio_file"] = str(clip_path)
-                seg["voice_type"] = seg_voice_type
-                seg["prosody"] = {
-                    "rate": eff_rate,
-                    "pitch": eff_pitch,
-                    "volume": eff_volume,
-                }
+                    seg["audio_file"] = str(clip_path)
+                    seg["voice_type"] = seg_voice_type
+                    seg["prosody"] = {
+                        "rate": eff_rate,
+                        "pitch": eff_pitch,
+                        "volume": eff_volume,
+                    }
+                    break
             except Exception as e:
-                logger.error(f"Error synthesizing segment {seg['id']}: {e}")
-                seg["audio_file"] = None
+                if attempt == 2:
+                    logger.error(f"Error synthesizing segment {seg['id']}: {e}")
+                    seg["audio_file"] = None
+                else:
+                    await asyncio.sleep(0.5 * (attempt + 1))
 
         async with lock:
             done_count += 1

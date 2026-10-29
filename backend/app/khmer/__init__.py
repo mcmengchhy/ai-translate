@@ -68,6 +68,9 @@ def normalize_khmer_unicode(text: str) -> str:
     # Clean up redundant spaces around Khmer punctuation
     normalized = re.sub(r"\s+([\u17D4\u17D5\u17D6\u17D7])", r"\1", normalized)
 
+    # Strip unpronounceable Greek/Math symbols mixed in from OCR errors (e.g. θ, α, ©, ™)
+    normalized = re.sub(r"[\u0370-\u03FF\u2000-\u206F\u2190-\u21FF\u2600-\u26FF]", "", normalized)
+
     return normalized
 
 

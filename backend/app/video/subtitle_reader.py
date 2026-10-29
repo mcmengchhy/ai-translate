@@ -258,7 +258,7 @@ def enhance_segments_with_hardsubs(
             if progress_callback and (i % 15 == 0 or i == total_cues - 1):
                 progress_callback(i + 1, total_cues)
 
-        # Step 2: Merge adjacent speech segments that share the exact same subtitle line
+        # Step 2: Merge adjacent speech segments that share the exact same subtitle line or fragments
         # (Combines broken speech fragments into complete, logical cinematic dialogue sentences)
         merged = []
         for seg in enhanced:
@@ -270,9 +270,24 @@ def enhance_segments_with_hardsubs(
             cur_text = seg.get("text", "").strip()
             prev_text = prev.get("text", "").strip()
 
-            # If adjacent segments have identical OCR text and are close in time (< 0.8s gap)
-            if cur_text and prev_text and (cur_text == prev_text) and (seg["start"] <= prev["end"] + 0.8):
+            # Clean OCR artifacts (leading single letters like 'L ', 'I ', symbols)
+            cur_clean = re.sub(r"^[A-Za-z0-9_\W]\s*", "", cur_text)
+            prev_clean = re.sub(r"^[A-Za-z0-9_\W]\s*", "", prev_text)
+
+            # Check if one is a duplicate or progressive subtitle fragment of the other
+            is_dup_or_fragment = False
+            if cur_text and prev_text:
+                if cur_text == prev_text or cur_clean == prev_clean:
+                    is_dup_or_fragment = True
+                elif len(cur_clean) >= 2 and len(prev_clean) >= 2:
+                    if cur_clean in prev_clean or prev_clean in cur_clean:
+                        is_dup_or_fragment = True
+
+            if is_dup_or_fragment and (seg["start"] <= prev["end"] + 1.5):
                 prev["end"] = max(prev["end"], seg["end"])
+                # Keep the longer, more complete text
+                if len(cur_text) > len(prev_text):
+                    prev["text"] = cur_text
                 # Keep audio speech references
                 if "asr_text" in seg and "asr_text" in prev and seg["asr_text"] != prev["asr_text"]:
                     prev["asr_text"] = f"{prev['asr_text']} {seg['asr_text']}".strip()

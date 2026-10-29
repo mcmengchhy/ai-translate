@@ -90,11 +90,11 @@ def generate_srt_file(segments: List[Dict[str, Any]], output_path: str) -> str:
 
 def schedule_non_overlapping_clips(
     segments: List[Dict[str, Any]],
-    min_gap: float = 0.08,  # 80ms breathing space between speech turns
+    min_gap: float = 0.20,  # 200ms natural breathing pause between speech cues
 ) -> List[Dict[str, Any]]:
     """
     Guarantees that NO TWO audio clips ever play simultaneously.
-    Adjusts tempos and timestamps so each speech cue finishes before the next begins.
+    Preserves 100% natural studio voice quality with zero atempo squashing or distortion.
     """
     valid_clips = []
     current_end_time = 0.0
@@ -109,29 +109,17 @@ def schedule_non_overlapping_clips(
             continue
 
         orig_start = float(seg.get("start", 0.0))
-        orig_end = float(seg.get("end", orig_start + raw_dur))
-        slot_duration = max(0.4, orig_end - orig_start)
 
         # 1. Prevent collision with previous clip:
-        # Start at earliest when previous finishes + min_gap
+        # Start at earliest when previous finishes + natural breathing space (min_gap)
         effective_start = max(orig_start, round(current_end_time + min_gap, 2))
 
-        # 2. Window available before the NEXT dialogue cue starts
-        next_start = float(segments[i + 1].get("start", 999999.0)) if i + 1 < len(segments) else 999999.0
-        available_window = max(0.4, next_start - effective_start - min_gap)
-
-        # 3. Natural speech preservation:
-        # If the synthesized speech fits before the next cue starts, play it at 100% natural preview speed!
-        # Only apply gentle tempo fitting if it would physically collide with the next speaker.
-        if raw_dur <= available_window:
-            fitted_audio = audio_file
-            actual_dur = raw_dur
-        else:
-            fitted_audio = fit_audio_tempo(audio_file, available_window)
-            actual_dur = get_media_duration(fitted_audio)
+        # 2. Natural studio voice preservation:
+        # Always play the pristine, uncompressed studio audio directly (zero atempo distortion)
+        actual_dur = raw_dur
 
         valid_clips.append({
-            "path": fitted_audio,
+            "path": audio_file,
             "start": round(effective_start, 2),
             "duration": round(actual_dur, 2),
             "seg_id": seg.get("id"),
@@ -154,18 +142,17 @@ def build_master_audio_track(
     batch_size: int = 50,
 ) -> Path:
     """
-    Builds the full-length master voice track using direct in-memory timeline stitching.
-    Processes thousands of dialogue cues for 1h, 5h, or 10h+ videos in seconds,
-    eliminating 30+ minutes of redundant FFmpeg multi-pass batching and tens of GBs of temp files.
+    Builds the full-length master voice track using direct in-memory timeline stitching at 48kHz.
+    Processes thousands of dialogue cues for 1h, 5h, or 10h+ videos in seconds with cinema-grade fidelity.
     """
     if not valid_clips:
         subprocess.run([
-            "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=stereo",
+            "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
             "-t", str(max(1.0, video_duration)), str(output_path)
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return output_path
 
-    sample_rate = 24000
+    sample_rate = 48000
     total_samples = int(max(1.0, video_duration + 1.0) * sample_rate)
 
     try:
@@ -227,7 +214,7 @@ def build_master_audio_track(
         # Fallback to standard FFmpeg if av/numpy fails
         silence_path = temp_dir / "silence.wav"
         subprocess.run([
-            "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=stereo",
+            "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
             "-t", str(max(1.0, video_duration)), str(silence_path)
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         inputs = ["-i", str(silence_path)]
@@ -268,8 +255,8 @@ async def assemble_dubbed_video(
     temp_dir = DUBBED_DIR / f"temp_{video.stem}"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Schedule clips with collision-free sequencer (no two voices overlap!)
-    valid_clips = schedule_non_overlapping_clips(segments, min_gap=0.08)
+    # 1. Schedule clips with collision-free sequencer (no two voices overlap, natural breathing space)
+    valid_clips = schedule_non_overlapping_clips(segments, min_gap=0.20)
 
     # 2. Build master voice track with batching support for 5h - 10h+ videos
     master_voice_path = temp_dir / "master_khmer_voice.wav"

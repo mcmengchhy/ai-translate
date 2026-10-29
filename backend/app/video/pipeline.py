@@ -167,6 +167,30 @@ async def run_video_dubbing_pipeline(
             )
 
         batch_polish_segments(segments)
+
+        # Deduplicate any adjacent cues that have identical translations or source text
+        deduped = []
+        for s in segments:
+            if not deduped:
+                deduped.append(s)
+                continue
+            p = deduped[-1]
+            t_cur = s.get("translation", "").strip()
+            t_prev = p.get("translation", "").strip()
+            s_cur = s.get("text", "").strip()
+            s_prev = p.get("text", "").strip()
+            is_dup = (
+                (t_cur and t_prev and t_cur == t_prev) or
+                (s_cur and s_prev and s_cur == s_prev)
+            ) and (s.get("start", 0) <= p.get("end", 0) + 1.2)
+            if is_dup:
+                p["end"] = max(p.get("end", 0), s.get("end", 0))
+            else:
+                deduped.append(s)
+        segments = deduped
+        for idx, s in enumerate(segments, start=1):
+            s["id"] = idx
+
         job["segments"] = segments
         job["progress"] = 70
         _save_job(job_id)
