@@ -30,6 +30,9 @@ class VideoDubUrlRequest(BaseModel):
     max_duration: Optional[int] = Field(default=0, description="Duration in seconds to dub (e.g. 90 for fast test, 300 for 5m, 0 for full video)")
     api_key: Optional[str] = Field(default=None, description="Optional Gemini API key")
     subtitle_file_path: Optional[str] = Field(default=None, description="Optional path to custom subtitle file")
+    voice_rate: str = Field(default="auto", description="Voice speed adjustment e.g. '+0%', '+10%', '-10%'")
+    voice_pitch: str = Field(default="auto", description="Voice pitch adjustment e.g. '+0Hz', '+3Hz', '-3Hz'")
+    voice_volume: str = Field(default="auto", description="Voice volume adjustment e.g. '+0%', '+10%'")
 
 
 class VoicePreviewRequest(BaseModel):
@@ -65,6 +68,9 @@ class JobRerenderRequest(BaseModel):
     audio_mode: str = "duck_subtle"  # "mute", "duck_subtle", "ducking"
     bg_volume: Optional[float] = 0.05
     burn_subtitles: bool = False
+    voice_rate: str = "auto"
+    voice_pitch: str = "auto"
+    voice_volume: str = "auto"
 
 
 @router.post("/dub-url")
@@ -86,6 +92,9 @@ async def start_dubbing_from_url(req: VideoDubUrlRequest, background_tasks: Back
         max_duration=req.max_duration,
         api_key=req.api_key,
         subtitle_file_path=req.subtitle_file_path,
+        voice_rate=req.voice_rate,
+        voice_pitch=req.voice_pitch,
+        voice_volume=req.voice_volume,
     )
 
     return {"job_id": job_id, "status": "queued"}
@@ -101,6 +110,9 @@ async def start_dubbing_from_file(
     audio_mode: str = Form("ducking"),
     burn_subtitles: bool = Form(False),
     api_key: Optional[str] = Form(None),
+    voice_rate: str = Form("auto"),
+    voice_pitch: str = Form("auto"),
+    voice_volume: str = Form("auto"),
 ):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file uploaded")
@@ -129,6 +141,9 @@ async def start_dubbing_from_file(
         burn_subtitles=burn_subtitles,
         api_key=api_key,
         subtitle_file_path=sub_path_str,
+        voice_rate=voice_rate,
+        voice_pitch=voice_pitch,
+        voice_volume=voice_volume,
     )
 
     return {"job_id": job_id, "status": "queued", "filename": file.filename}
@@ -324,20 +339,28 @@ async def rerender_dubbed_video(job_id: str, req: JobRerenderRequest):
     audio_dir = ROOT_PROJECT_DIR / "storage" / "downloads" / f"voice_{job_id}"
     audio_dir.mkdir(parents=True, exist_ok=True)
 
+    force_resynth = (req.voice_rate != "auto" or req.voice_pitch != "auto" or req.voice_volume != "auto")
+
     for seg in segments:
         audio_file = seg.get("audio_file")
         v_type = seg.get("voice_type", "male")
         text = normalize_khmer_unicode(seg.get("translation", ""))
 
-        if not audio_file or not Path(audio_file).exists() or seg.get("_dirty"):
+        if not audio_file or not Path(audio_file).exists() or seg.get("_dirty") or force_resynth:
             seg_file = audio_dir / f"seg_{seg['id']}_{v_type}.mp3"
             if text:
                 seg_dur = float(seg.get("end", 0)) - float(seg.get("start", 0))
+                seg_rate = seg.get("rate") or req.voice_rate
+                seg_pitch = seg.get("pitch") or req.voice_pitch
+                seg_volume = seg.get("volume") or req.voice_volume
                 await synthesize_khmer_clip(
                     text, str(seg_file),
                     voice_type=v_type,
+                    rate=seg_rate,
+                    pitch=seg_pitch,
+                    volume=seg_volume,
                     seg_duration=seg_dur if seg_dur > 0 else None,
-                    enhance=False,
+                    enhance=True,
                 )
                 seg["audio_file"] = str(seg_file)
                 seg.pop("_dirty", None)

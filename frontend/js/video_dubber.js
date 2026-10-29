@@ -7,7 +7,97 @@ let pollInterval = null;
 
 document.addEventListener('DOMContentLoaded', () => {
     initVideoDubberEvents();
+    initVoiceTunerControls();
 });
+
+// ─────────────────────────────────────────────
+// Voice Tuner Knobs (Rate, Pitch, Volume)
+// ─────────────────────────────────────────────
+function getVoiceTunerValues() {
+    const pitchSlider = document.getElementById('voice-pitch-slider');
+    const speedSlider = document.getElementById('voice-speed-slider');
+    const volSlider = document.getElementById('voice-volume-slider');
+
+    const pitchVal = parseInt(pitchSlider?.value || '0', 10);
+    const speedVal = parseInt(speedSlider?.value || '0', 10);
+    const volVal = parseInt(volSlider?.value || '5', 10);
+
+    const rate = speedVal === 0 ? "auto" : (speedVal > 0 ? `+${speedVal}%` : `${speedVal}%`);
+    const pitch = pitchVal === 0 ? "auto" : (pitchVal > 0 ? `+${pitchVal}Hz` : `${pitchVal}Hz`);
+    const volume = volVal === 0 ? "+0%" : (volVal > 0 ? `+${volVal}%` : `${volVal}%`);
+
+    return { rate, pitch, volume, speedVal, pitchVal, volVal };
+}
+
+function initVoiceTunerControls() {
+    const toggleBtn = document.getElementById('btn-toggle-voice-tuner');
+    const drawer = document.getElementById('voice-tuner-drawer');
+    const pitchSlider = document.getElementById('voice-pitch-slider');
+    const speedSlider = document.getElementById('voice-speed-slider');
+    const volSlider = document.getElementById('voice-volume-slider');
+    const resetBtn = document.getElementById('btn-reset-voice-tuner');
+    const testTunedBtn = document.getElementById('btn-test-tuned-voice');
+
+    if (toggleBtn && drawer) {
+        toggleBtn.addEventListener('click', () => {
+            const isHidden = drawer.style.display === 'none' || !drawer.style.display;
+            drawer.style.display = isHidden ? 'block' : 'none';
+            toggleBtn.classList.toggle('active', isHidden);
+        });
+    }
+
+    if (pitchSlider) {
+        pitchSlider.addEventListener('input', (e) => {
+            const val = parseInt(e.target.value, 10);
+            const badge = document.getElementById('voice-pitch-val');
+            if (badge) {
+                if (val === 0) badge.textContent = "0 Hz (Natural)";
+                else if (val > 0) badge.textContent = `+${val} Hz (Higher)`;
+                else badge.textContent = `${val} Hz (Deeper)`;
+            }
+        });
+    }
+
+    if (speedSlider) {
+        speedSlider.addEventListener('input', (e) => {
+            const val = parseInt(e.target.value, 10);
+            const badge = document.getElementById('voice-speed-val');
+            if (badge) {
+                if (val === 0) badge.textContent = "0% (Natural)";
+                else if (val > 0) badge.textContent = `+${val}% (Faster)`;
+                else badge.textContent = `${val}% (Slower)`;
+            }
+        });
+    }
+
+    if (volSlider) {
+        volSlider.addEventListener('input', (e) => {
+            const val = parseInt(e.target.value, 10);
+            const badge = document.getElementById('voice-volume-val');
+            if (badge) {
+                if (val === 0) badge.textContent = "+0% (Standard)";
+                else if (val > 0) badge.textContent = `+${val}% (Clear Boost)`;
+                else badge.textContent = `${val}% (Softer)`;
+            }
+        });
+    }
+
+    if (resetBtn) {
+        resetBtn.addEventListener('click', () => {
+            if (pitchSlider) pitchSlider.value = 0;
+            if (speedSlider) speedSlider.value = 0;
+            if (volSlider) volSlider.value = 5;
+            document.getElementById('voice-pitch-val').textContent = "0 Hz (Natural)";
+            document.getElementById('voice-speed-val').textContent = "0% (Natural)";
+            document.getElementById('voice-volume-val').textContent = "+5% (Clear Boost)";
+            showToast("Voice adjustments reset to natural studio defaults", "info");
+        });
+    }
+
+    if (testTunedBtn) {
+        testTunedBtn.addEventListener('click', handleVoicePreview);
+    }
+}
 
 function initVideoDubberEvents() {
     const dubUrlBtn = document.getElementById('start-url-dub-btn');
@@ -51,14 +141,20 @@ function initVideoDubberEvents() {
     }
 }
 
-// Preview Khmer Neural Voice
+// Preview Khmer Neural Voice with Active Tuner Settings
 async function handleVoicePreview() {
     const voiceSelect = document.getElementById('video-voice-select').value;
     const previewBtn = document.getElementById('preview-voice-btn');
-    const originalHtml = previewBtn.innerHTML;
+    const testTunedBtn = document.getElementById('btn-test-tuned-voice');
+    const activeBtn = testTunedBtn || previewBtn;
+    const originalHtml = activeBtn ? activeBtn.innerHTML : '';
 
-    previewBtn.disabled = true;
-    previewBtn.innerHTML = '<i class="ph ph-spinner"></i> Generating...';
+    if (activeBtn) {
+        activeBtn.disabled = true;
+        activeBtn.innerHTML = '<i class="ph ph-spinner ph-spin"></i> Generating...';
+    }
+
+    const tuner = getVoiceTunerValues();
 
     try {
         const resp = await fetch('/api/video/preview-voice', {
@@ -66,7 +162,11 @@ async function handleVoicePreview() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 text: "សួស្តីបងប្អូនទាំងអស់គ្នា សូមស្វាគមន៍មកកាន់វីដេអូបកប្រែជាភាសាខ្មែរ",
-                voice_type: voiceSelect
+                voice_type: voiceSelect,
+                rate: tuner.rate,
+                pitch: tuner.pitch,
+                volume: tuner.volume,
+                enhance: true
             })
         });
 
@@ -75,12 +175,15 @@ async function handleVoicePreview() {
 
         const audio = new Audio(data.audio_url);
         audio.play();
-        showToast(`Playing sample: ${voiceSelect === 'male' ? 'Piseth (Male)' : 'Sreymom (Female)'}`, 'success');
+        const voiceName = voiceSelect === 'male' ? 'Piseth (Male)' : 'Sreymom (Female)';
+        showToast(`Playing sample: ${voiceName} [Rate: ${tuner.rate}, Pitch: ${tuner.pitch}, Vol: ${tuner.volume}]`, 'success');
     } catch (err) {
         showToast(err.message, 'error');
     } finally {
-        previewBtn.disabled = false;
-        previewBtn.innerHTML = originalHtml;
+        if (activeBtn) {
+            activeBtn.disabled = false;
+            activeBtn.innerHTML = originalHtml;
+        }
     }
 }
 
@@ -100,6 +203,7 @@ async function handleUrlDubbing() {
     const burnSubtitles = document.getElementById('burn-subs-checkbox').checked;
     const maxDur = parseInt(document.getElementById('video-duration-select')?.value ?? '0', 10);
     const settings = getSavedSettings();
+    const tuner = getVoiceTunerValues();
 
     setPipelineUIState('active');
 
@@ -114,7 +218,10 @@ async function handleUrlDubbing() {
                 audio_mode: audioMode,
                 burn_subtitles: burnSubtitles,
                 max_duration: maxDur,
-                api_key: settings.geminiKey || null
+                api_key: settings.geminiKey || null,
+                voice_rate: tuner.rate,
+                voice_pitch: tuner.pitch,
+                voice_volume: tuner.volume
             })
         });
 
@@ -147,6 +254,7 @@ async function handleFileDubbing() {
     const audioMode = document.getElementById('video-audio-mode').value;
     const burnSubtitles = document.getElementById('burn-subs-checkbox').checked;
     const settings = getSavedSettings();
+    const tuner = getVoiceTunerValues();
 
     const formData = new FormData();
     formData.append('file', file);
@@ -158,6 +266,9 @@ async function handleFileDubbing() {
     formData.append('tone', tone);
     formData.append('audio_mode', audioMode);
     formData.append('burn_subtitles', burnSubtitles ? 'true' : 'false');
+    formData.append('voice_rate', tuner.rate);
+    formData.append('voice_pitch', tuner.pitch);
+    formData.append('voice_volume', tuner.volume);
     if (settings.geminiKey) formData.append('api_key', settings.geminiKey);
 
     setPipelineUIState('active');
@@ -532,13 +643,18 @@ async function studioPreviewCueVoice(index) {
     }
 
     try {
+        const tuner = getVoiceTunerValues();
         const resp = await fetch(`/api/video/job/${studioJobId}/preview-segment`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 segment_id: seg.id || (index + 1),
                 text: seg.translation,
-                voice_type: seg.voice_type || "male"
+                voice_type: seg.voice_type || "male",
+                rate: seg.rate || tuner.rate,
+                pitch: seg.pitch || tuner.pitch,
+                volume: seg.volume || tuner.volume,
+                enhance: true
             })
         });
 
@@ -691,6 +807,7 @@ async function studioRerenderVideo() {
     }
 
     try {
+        const tuner = getVoiceTunerValues();
         const resp = await fetch(`/api/video/job/${studioJobId}/rerender`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -698,7 +815,10 @@ async function studioRerenderVideo() {
                 segments: studioSegments,
                 audio_mode: audioMode,
                 bg_volume: bgVol,
-                burn_subtitles: false
+                burn_subtitles: false,
+                voice_rate: tuner.rate,
+                voice_pitch: tuner.pitch,
+                voice_volume: tuner.volume
             })
         });
 

@@ -34,6 +34,20 @@ def _count_khmer_syllables(text: str) -> int:
     return len(re.findall(r"[\u1780-\u17A2]", text))
 
 
+def _sanitize_edge_tts_knob(val: Optional[str], default_unit: str = "%") -> str:
+    """Normalizes Edge-TTS rate/pitch/volume strings into valid ^[+-]\\d+(%|Hz)$."""
+    if not val:
+        return f"+0{default_unit}"
+    val = str(val).strip()
+    if val == "auto":
+        return f"+0{default_unit}"
+    if not val.endswith(default_unit):
+        val = f"{val}{default_unit}"
+    if not val.startswith("+") and not val.startswith("-"):
+        val = f"+{val}"
+    return val
+
+
 def _detect_prosody(
     text: str,
     seg_duration: Optional[float] = None,
@@ -160,9 +174,9 @@ async def synthesize_khmer_clip(
 
     # Resolve prosody
     auto_rate, auto_pitch, auto_volume = _detect_prosody(clean_text, seg_duration)
-    eff_rate   = auto_rate   if rate   == "auto" else rate
-    eff_pitch  = auto_pitch  if pitch  == "auto" else pitch
-    eff_volume = auto_volume if volume == "auto" else volume
+    eff_rate   = auto_rate   if (not rate or rate == "auto") else _sanitize_edge_tts_knob(rate, "%")
+    eff_pitch  = auto_pitch  if (not pitch or pitch == "auto") else _sanitize_edge_tts_knob(pitch, "Hz")
+    eff_volume = auto_volume if (not volume or volume == "auto") else _sanitize_edge_tts_knob(volume, "%")
 
     communicate = edge_tts.Communicate(
         clean_text, voice,
@@ -182,6 +196,9 @@ async def synthesize_segments(
     segments: List[Dict[str, Any]],
     output_dir: Path,
     voice_type: str = "male",
+    rate: str = "auto",
+    pitch: str = "auto",
+    volume: str = "auto",
     max_concurrency: int = 8,
     enhance: bool = True,
     on_progress=None,
@@ -198,7 +215,6 @@ async def synthesize_segments(
                      each segment finishes so callers can report live progress.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    voice = KHMER_VOICES.get(voice_type.lower(), KHMER_VOICES["male"])
     semaphore = asyncio.Semaphore(max_concurrency)
     total = len(segments)
     done_count = 0
@@ -219,29 +235,42 @@ async def synthesize_segments(
         seg_dur = float(seg.get("end", 0)) - float(seg.get("start", 0))
         seg_dur = seg_dur if seg_dur > 0.1 else None
 
+        # Allow per-segment voice override or global voice
+        seg_voice_type = seg.get("voice_type") or voice_type
+        voice = KHMER_VOICES.get(seg_voice_type.lower(), KHMER_VOICES["male"])
+
         auto_rate, auto_pitch, auto_volume = _detect_prosody(clean, seg_dur)
 
-        clip_path = output_dir / f"seg_{seg['id']}.mp3"
+        req_rate = seg.get("rate") or rate
+        req_pitch = seg.get("pitch") or pitch
+        req_volume = seg.get("volume") or volume
+
+        eff_rate   = auto_rate   if (not req_rate or req_rate == "auto") else _sanitize_edge_tts_knob(req_rate, "%")
+        eff_pitch  = auto_pitch  if (not req_pitch or req_pitch == "auto") else _sanitize_edge_tts_knob(req_pitch, "Hz")
+        eff_volume = auto_volume if (not req_volume or req_volume == "auto") else _sanitize_edge_tts_knob(req_volume, "%")
+
+        clip_path = output_dir / f"seg_{seg['id']}_{seg_voice_type}.mp3"
         async with semaphore:
             try:
                 communicate = edge_tts.Communicate(
                     clean, voice,
-                    rate=auto_rate,
-                    pitch=auto_pitch,
-                    volume=auto_volume,
+                    rate=eff_rate,
+                    pitch=eff_pitch,
+                    volume=eff_volume,
                 )
                 await communicate.save(str(clip_path))
 
                 if enhance:
-                    # Run heavy FFmpeg work in a thread pool so it doesn't block the event loop
+                    # Run studio EQ + loudnorm in executor to match preview audio exactly
                     loop = asyncio.get_event_loop()
                     await loop.run_in_executor(None, _enhance_audio_clip, str(clip_path))
 
                 seg["audio_file"] = str(clip_path)
+                seg["voice_type"] = seg_voice_type
                 seg["prosody"] = {
-                    "rate": auto_rate,
-                    "pitch": auto_pitch,
-                    "volume": auto_volume,
+                    "rate": eff_rate,
+                    "pitch": eff_pitch,
+                    "volume": eff_volume,
                 }
             except Exception as e:
                 logger.error(f"Error synthesizing segment {seg['id']}: {e}")

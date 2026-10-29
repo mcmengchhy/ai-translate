@@ -83,6 +83,9 @@ async def run_video_dubbing_pipeline(
     max_duration: Optional[int] = 90,
     api_key: Optional[str] = None,
     subtitle_file_path: Optional[str] = None,
+    voice_rate: str = "auto",
+    voice_pitch: str = "auto",
+    voice_volume: str = "auto",
 ):
     job = JOBS.get(job_id)
     if not job:
@@ -173,14 +176,15 @@ async def run_video_dubbing_pipeline(
         logger.info(f"Generating Khmer speech ({voice_type}) for {len(segments)} segments...")
         audio_dir = Path(video_path).parent / f"voice_{job_id}"
 
-        # Synthesize with live progress updates every batch of segments
-        # Per-clip FFmpeg EQ is skipped (enhance=False) — EQ is applied once
-        # on the full master voice track in dubber.py which is far faster.
+        # Synthesize with studio-quality enhancement (enhance=True) matching preview audio exactly
         segments = await synthesize_segments(
             segments, audio_dir,
             voice_type=voice_type,
+            rate=voice_rate,
+            pitch=voice_pitch,
+            volume=voice_volume,
             max_concurrency=20,
-            enhance=False,
+            enhance=True,
             on_progress=lambda done, total: (
                 job.update({"progress": 70 + int(done / total * 13), "stage": f"Synthesizing voice ({done}/{total})"}),
                 _save_job(job_id),

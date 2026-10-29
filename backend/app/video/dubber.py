@@ -32,19 +32,23 @@ def get_media_duration(file_path: str) -> float:
 
 def fit_audio_tempo(clip_path: str, target_duration: float) -> str:
     """
-    Speeds up or slows down audio to fit within target duration (between 0.8x and 1.35x).
+    Preserves exact studio voice clarity.
+    Only applies gentle atempo (max 1.15x) if speech strictly exceeds the available window.
     """
     current_dur = get_media_duration(clip_path)
     if current_dur <= 0 or target_duration <= 0:
         return clip_path
 
-    # If current audio is within 5% of target, keep original tempo
-    if current_dur <= target_duration * 1.05:
+    # If audio fits within or close to target (+12%), keep 100% original uncompressed audio
+    if current_dur <= target_duration * 1.12:
         return clip_path
 
     speed = current_dur / target_duration
-    # Clamp speed between 0.8x and 1.35x so speech sounds natural
-    speed = max(0.8, min(1.35, speed))
+    if speed <= 1.05:
+        return clip_path
+
+    # Clamp speed between 0.95x and 1.15x so voice never sounds robotic, metallic, or chipmunk-like
+    speed = min(1.15, max(0.95, speed))
 
     stretched_path = Path(clip_path).parent / f"fit_{Path(clip_path).name}"
     cmd = [
@@ -112,13 +116,19 @@ def schedule_non_overlapping_clips(
         # Start at earliest when previous finishes + min_gap
         effective_start = max(orig_start, round(current_end_time + min_gap, 2))
 
-        # 2. Fit tempo if needed
+        # 2. Window available before the NEXT dialogue cue starts
         next_start = float(segments[i + 1].get("start", 999999.0)) if i + 1 < len(segments) else 999999.0
         available_window = max(0.4, next_start - effective_start - min_gap)
-        target_slot = min(slot_duration, available_window)
 
-        fitted_audio = fit_audio_tempo(audio_file, target_slot)
-        actual_dur = get_media_duration(fitted_audio)
+        # 3. Natural speech preservation:
+        # If the synthesized speech fits before the next cue starts, play it at 100% natural preview speed!
+        # Only apply gentle tempo fitting if it would physically collide with the next speaker.
+        if raw_dur <= available_window:
+            fitted_audio = audio_file
+            actual_dur = raw_dur
+        else:
+            fitted_audio = fit_audio_tempo(audio_file, available_window)
+            actual_dur = get_media_duration(fitted_audio)
 
         valid_clips.append({
             "path": fitted_audio,
@@ -201,29 +211,15 @@ def build_master_audio_track(
             except Exception as e:
                 logger.warning(f"Error decoding clip {clip_path}: {e}")
 
-        # Write clean raw timeline WAV in ~0.2s
-        raw_wav_path = temp_dir / "raw_timeline.wav"
-        with wave.open(str(raw_wav_path), "wb") as wf:
+        # Write clean timeline WAV directly with exact studio fidelity!
+        # Eliminates loudnorm over silence, which was causing severe pumping & muffled audio.
+        with wave.open(str(output_path), "wb") as wf:
             wf.setnchannels(2)
             wf.setsampwidth(2)
             wf.setframerate(sample_rate)
             wf.writeframes(timeline.tobytes())
 
-        # Single fast pass for master EQ & loudness normalization
-        eq_filter = "highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=7"
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(raw_wav_path),
-            "-af", eq_filter,
-            str(output_path)
-        ]
-        logger.info("Applying master voice EQ & loudness normalization...")
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        if raw_wav_path.exists():
-            raw_wav_path.unlink(missing_ok=True)
-
-        logger.info(f"Master voice track successfully generated: {output_path}")
+        logger.info(f"Master voice track successfully generated with 100% studio fidelity: {output_path}")
         return output_path
 
     except Exception as e:
@@ -293,26 +289,52 @@ async def assemble_dubbed_video(
     # Audio balance configuration:
     final_cmd = ["ffmpeg", "-y", "-i", str(video), "-i", str(master_voice_path)]
 
+    # Important audio mixing settings:
+    # 1. ALWAYS pass 'normalize=0:dropout_transition=0' to amix so Khmer voice volume is never halved (-6dB)!
+    # 2. Boost Khmer voice volume (volume=1.2) for maximum clarity and presence.
+    # 3. For sidechain ducking: duck the background audio aggressively (ratio=28, threshold=0.008)
+    #    so the original foreign speech does not clash or play simultaneously with the Khmer speech!
     if bg_volume is not None:
         if bg_volume <= 0.001:
-            audio_filter = "[1:a]volume=1.0[aout]"
+            # 100% Pure Voiceover
+            audio_filter = "[1:a]volume=1.2[aout]"
         elif bg_volume < 0:
-            # Special mode: Smart Sidechain Auto-Ducking (mutes original during speech, keeps music & sfx during pauses)
-            audio_filter = "[0:a][1:a]sidechaincompress=threshold=0.015:ratio=20:attack=10:release=250[bg];[bg][1:a]amix=inputs=2:duration=first[aout]"
+            # Smart Cinema Ducking
+            audio_filter = (
+                "[0:a][1:a]sidechaincompress=threshold=0.008:ratio=28:attack=5:release=350[bg];"
+                "[1:a]volume=1.2[khmer];"
+                "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
+            )
         else:
-            audio_filter = f"[0:a]volume={bg_volume:.3f}[bg];[1:a]volume=1.1[khmer];[bg][khmer]amix=inputs=2:duration=first[aout]"
+            audio_filter = (
+                f"[0:a]volume={bg_volume:.3f}[bg];"
+                f"[1:a]volume=1.2[khmer];"
+                f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
+            )
     elif audio_mode in ("smart_sidechain", "smart"):
-        # Cinema-quality: smooth sidechain ducking (fast attack, natural 400ms release)
-        audio_filter = "[0:a][1:a]sidechaincompress=threshold=0.012:ratio=18:attack=5:release=400[bg];[bg][1:a]amix=inputs=2:duration=first[aout]"
+        # Smart Cinema Ducking (mutes foreign voice during speech, keeps BGM in pauses)
+        audio_filter = (
+            "[0:a][1:a]sidechaincompress=threshold=0.008:ratio=28:attack=5:release=350[bg];"
+            "[1:a]volume=1.2[khmer];"
+            "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
+        )
     elif audio_mode in ("mute", "replace"):
-        # Mute original completely: only Khmer dubbing audible!
-        audio_filter = "[1:a]volume=1.0[aout]"
+        # 100% Pure Voiceover: only Khmer dubbing audible, identical to preview!
+        audio_filter = "[1:a]volume=1.2[aout]"
     elif audio_mode == "duck_subtle":
-        # 5% subtle background audio with normalized Khmer voice
-        audio_filter = "[0:a]volume=0.05[bg];[1:a]volume=1.1,loudnorm=I=-16:TP=-1.5[khmer];[bg][khmer]amix=inputs=2:duration=first[aout]"
+        # 5% subtle background audio with clean loud Khmer voice
+        audio_filter = (
+            "[0:a]volume=0.05[bg];"
+            "[1:a]volume=1.2[khmer];"
+            "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
+        )
     else:
-        # Default: Cinema-quality sidechain ducking (smooth 5ms attack, 400ms release)
-        audio_filter = "[0:a][1:a]sidechaincompress=threshold=0.012:ratio=18:attack=5:release=400[bg];[bg][1:a]amix=inputs=2:duration=first[aout]"
+        # Standard Ducking: lowers original audio to 10%, mixes with clear loud Khmer voice
+        audio_filter = (
+            "[0:a]volume=0.10[bg];"
+            "[1:a]volume=1.2[khmer];"
+            "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
+        )
 
     if burn_subtitles:
         final_cmd.extend([

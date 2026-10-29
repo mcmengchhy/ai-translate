@@ -90,8 +90,11 @@
                                     <option value="male" selected>👨 Piseth (Male Neural) - Friendly & Clear</option>
                                     <option value="female">👩 Sreymom (Female Neural) - Warm & Expressive</option>
                                 </select>
-                                <button class="btn-ghost btn-sm" id="preview-voice-btn" title="Test sample speech">
-                                    <i class="ph ph-speaker-high"></i> Test Voice
+                                <button type="button" class="btn-ghost btn-sm" id="preview-voice-btn" title="Test sample speech">
+                                    <i class="ph ph-speaker-high"></i> Test
+                                </button>
+                                <button type="button" class="btn-ghost btn-sm" id="btn-toggle-voice-tuner" title="Fine-tune pitch, speed, and volume for male and female voices">
+                                    <i class="ph ph-sliders"></i> Tune Voice
                                 </button>
                             </div>
                         </div>
@@ -136,6 +139,71 @@
                                 <input type="checkbox" id="burn-subs-checkbox">
                                 <span>Burn Subtitles into Video</span>
                             </label>
+                        </div>
+                    </div>
+
+                    <!-- Expandable Voice Tuner Drawer -->
+                    <div id="voice-tuner-drawer" class="voice-tuner-panel" style="display: none;">
+                        <div class="tuner-header">
+                            <div class="tuner-title">
+                                <i class="ph ph-faders"></i>
+                                <span>Khmer Voice Fine-Tuning (លៃតម្រូវសំឡេងប្រុស និង ស្រី)</span>
+                            </div>
+                            <div class="tuner-actions">
+                                <button type="button" class="btn-link-xs" id="btn-reset-voice-tuner" title="Reset all adjustments to natural defaults">
+                                    <i class="ph ph-arrow-counter-clockwise"></i> Reset to Natural
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="tuner-grid">
+                            <!-- Voice Pitch -->
+                            <div class="tuner-item">
+                                <div class="tuner-label-row">
+                                    <label for="voice-pitch-slider"><i class="ph ph-waveform"></i> Pitch / ទឹកដម (Hz)</label>
+                                    <span class="tuner-val-badge" id="voice-pitch-val">0 Hz (Natural)</span>
+                                </div>
+                                <div class="tuner-slider-wrap">
+                                    <span class="slider-end-label">Deeper (-10Hz)</span>
+                                    <input type="range" id="voice-pitch-slider" min="-10" max="10" step="1" value="0" class="tuner-slider">
+                                    <span class="slider-end-label">Higher (+10Hz)</span>
+                                </div>
+                            </div>
+
+                            <!-- Voice Speed / Rate -->
+                            <div class="tuner-item">
+                                <div class="tuner-label-row">
+                                    <label for="voice-speed-slider"><i class="ph ph-gauge"></i> Speed / ល្បឿន (%)</label>
+                                    <span class="tuner-val-badge" id="voice-speed-val">0% (Natural)</span>
+                                </div>
+                                <div class="tuner-slider-wrap">
+                                    <span class="slider-end-label">Slower (-25%)</span>
+                                    <input type="range" id="voice-speed-slider" min="-25" max="25" step="5" value="0" class="tuner-slider">
+                                    <span class="slider-end-label">Faster (+25%)</span>
+                                </div>
+                            </div>
+
+                            <!-- Voice Volume -->
+                            <div class="tuner-item">
+                                <div class="tuner-label-row">
+                                    <label for="voice-volume-slider"><i class="ph ph-speaker-high"></i> Volume / កម្រិតឮ (%)</label>
+                                    <span class="tuner-val-badge" id="voice-volume-val">+5% (Clear Boost)</span>
+                                </div>
+                                <div class="tuner-slider-wrap">
+                                    <span class="slider-end-label">Softer (-20%)</span>
+                                    <input type="range" id="voice-volume-slider" min="-20" max="30" step="5" value="5" class="tuner-slider">
+                                    <span class="slider-end-label">Louder (+30%)</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="tuner-footer">
+                            <span class="tuner-hint">
+                                <i class="ph ph-info"></i> Applies directly to <b>👨 Piseth (Male)</b> and <b>👩 Sreymom (Female)</b> neural voices.
+                            </span>
+                            <button type="button" class="btn-ghost btn-sm" id="btn-test-tuned-voice">
+                                <i class="ph ph-play-circle"></i> Test Tuned Voice
+                            </button>
                         </div>
                     </div>
                 </div>
