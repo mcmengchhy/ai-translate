@@ -235,7 +235,7 @@ async def assemble_dubbed_video(
     video_path: str,
     segments: List[Dict[str, Any]],
     output_filename: Optional[str] = None,
-    audio_mode: str = "ducking",  # "ducking", "mute", "duck_subtle", "replace"
+    audio_mode: str = "replace",  # "replace" (100% pure voiceover matching preview), "ducking", "mute", "smart_sidechain"
     bg_volume: Optional[float] = None,
     burn_subtitles: bool = False,
 ) -> Dict[str, Any]:
@@ -277,49 +277,50 @@ async def assemble_dubbed_video(
     final_cmd = ["ffmpeg", "-y", "-i", str(video), "-i", str(master_voice_path)]
 
     # Important audio mixing settings:
-    # 1. ALWAYS pass 'normalize=0:dropout_transition=0' to amix so Khmer voice volume is never halved (-6dB)!
-    # 2. Boost Khmer voice volume (volume=1.2) for maximum clarity and presence.
-    # 3. For sidechain ducking: duck the background audio aggressively (ratio=20, threshold=0.008)
-    #    so the original foreign speech does not clash or play simultaneously with the Khmer speech!
+    # 1. Default to 100% Pure Studio Voiceover ([1:a]volume=1.0[aout]) for crystal-clear sound bit-exact identical to preview.
+    # 2. amix uses 'normalize=0:dropout_transition=0' so Khmer voice volume is never halved (-6dB).
+    # 3. For ducking/sidechain: pre-attenuates original foreign audio so speech bleed and background hiss never clash.
     if bg_volume is not None:
         if bg_volume <= 0.001:
-            # 100% Pure Voiceover
-            audio_filter = "[1:a]volume=1.2[aout]"
+            # 100% Pure Voiceover: zero original video noise/speech, bit-exact identical to preview
+            audio_filter = "[1:a]volume=1.0[aout]"
         elif bg_volume < 0:
-            # Smart Cinema Ducking
+            # Smart Cinema Ducking with pre-attenuated background
             audio_filter = (
-                "[0:a][1:a]sidechaincompress=threshold=0.008:ratio=20:attack=5:release=350[bg];"
-                "[1:a]volume=1.2[khmer];"
+                "[0:a]volume=0.15[bg_in];"
+                "[bg_in][1:a]sidechaincompress=threshold=0.008:ratio=20:attack=5:release=350[bg];"
+                "[1:a]volume=1.0[khmer];"
                 "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
             )
         else:
             audio_filter = (
                 f"[0:a]volume={bg_volume:.3f}[bg];"
-                f"[1:a]volume=1.2[khmer];"
+                f"[1:a]volume=1.0[khmer];"
                 f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
             )
+    elif audio_mode in ("mute", "replace"):
+        # 100% Pure Studio Voiceover: only Khmer dubbing audible, 100% bit-exact identical to preview!
+        audio_filter = "[1:a]volume=1.0[aout]"
     elif audio_mode in ("smart_sidechain", "smart"):
         # Smart Cinema Ducking (mutes foreign voice during speech, keeps BGM in pauses)
         audio_filter = (
-            "[0:a][1:a]sidechaincompress=threshold=0.008:ratio=20:attack=5:release=350[bg];"
-            "[1:a]volume=1.2[khmer];"
+            "[0:a]volume=0.15[bg_in];"
+            "[bg_in][1:a]sidechaincompress=threshold=0.008:ratio=20:attack=5:release=350[bg];"
+            "[1:a]volume=1.0[khmer];"
             "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
-    elif audio_mode in ("mute", "replace"):
-        # 100% Pure Voiceover: only Khmer dubbing audible, identical to preview!
-        audio_filter = "[1:a]volume=1.2[aout]"
     elif audio_mode == "duck_subtle":
         # 5% subtle background audio with clean loud Khmer voice
         audio_filter = (
             "[0:a]volume=0.05[bg];"
-            "[1:a]volume=1.2[khmer];"
+            "[1:a]volume=1.0[khmer];"
             "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
     else:
         # Standard Ducking: lowers original audio to 10%, mixes with clear loud Khmer voice
         audio_filter = (
             "[0:a]volume=0.10[bg];"
-            "[1:a]volume=1.2[khmer];"
+            "[1:a]volume=1.0[khmer];"
             "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
 

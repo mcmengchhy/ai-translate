@@ -19,11 +19,11 @@ function getVoiceTunerValues() {
     const volSlider = document.getElementById('voice-volume-slider');
 
     const pitchVal = parseInt(pitchSlider?.value || '0', 10);
-    const speedVal = parseInt(speedSlider?.value || '0', 10);
+    const speedVal = parseInt(speedSlider?.value || '10', 10);
     const volVal = parseInt(volSlider?.value || '5', 10);
 
-    const rate = speedVal === 0 ? "auto" : (speedVal > 0 ? `+${speedVal}%` : `${speedVal}%`);
-    const pitch = pitchVal === 0 ? "auto" : (pitchVal > 0 ? `+${pitchVal}Hz` : `${pitchVal}Hz`);
+    const rate = speedVal === 0 ? "+0%" : (speedVal > 0 ? `+${speedVal}%` : `${speedVal}%`);
+    const pitch = pitchVal === 0 ? "+0Hz" : (pitchVal > 0 ? `+${pitchVal}Hz` : `${pitchVal}Hz`);
     const volume = volVal === 0 ? "+0%" : (volVal > 0 ? `+${volVal}%` : `${volVal}%`);
 
     return { rate, pitch, volume, speedVal, pitchVal, volVal };
@@ -85,10 +85,10 @@ function initVoiceTunerControls() {
     if (resetBtn) {
         resetBtn.addEventListener('click', () => {
             if (pitchSlider) pitchSlider.value = 0;
-            if (speedSlider) speedSlider.value = 0;
+            if (speedSlider) speedSlider.value = 10;
             if (volSlider) volSlider.value = 5;
             document.getElementById('voice-pitch-val').textContent = "0 Hz (Natural)";
-            document.getElementById('voice-speed-val').textContent = "0% (Natural)";
+            document.getElementById('voice-speed-val').textContent = "+10% (Fluent / Conversational)";
             document.getElementById('voice-volume-val').textContent = "+5% (Clear Boost)";
             showToast("Voice adjustments reset to natural studio defaults", "info");
         });
@@ -796,10 +796,12 @@ async function studioRerenderVideo() {
     btn.innerHTML = `<i class="ph ph-spinner ph-spin"></i> Re-rendering Video...`;
     btn.disabled = true;
 
-    const bgVol = parseFloat(document.getElementById('studio-bg-volume').value || "-1");
-    let audioMode = "smart_sidechain";
-    if (bgVol === 0) {
-        audioMode = "mute";
+    const bgVol = parseFloat(document.getElementById('studio-bg-volume').value || "0.0");
+    let audioMode = "replace";
+    if (bgVol <= 0.001 && bgVol >= 0) {
+        audioMode = "replace";
+    } else if (bgVol < 0) {
+        audioMode = "smart_sidechain";
     } else if (bgVol > 0 && bgVol <= 0.06) {
         audioMode = "duck_subtle";
     } else if (bgVol > 0.06) {

@@ -54,12 +54,12 @@ def _detect_prosody(
 ) -> Tuple[str, str, str]:
     """
     Auto-determines Edge-TTS prosody knobs from text content and timing.
-    Preserves natural conversational cadence (+0% speed) to maintain warm, clear human speech.
+    Defaults to +10% speed for fluent, lively conversational Khmer speech matching video pacing.
     """
     clean = text.strip()
 
-    # Rate: Keep natural, unhurried conversational cadence (+0%)
-    rate_pct = 0
+    # Rate: Fluent, conversational pacing (+10% eliminates slow dragging)
+    rate_pct = 10
 
     # Pitch: Subtle emotion cues from punctuation
     pitch_hz = 0

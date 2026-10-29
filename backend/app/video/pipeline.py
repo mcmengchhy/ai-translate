@@ -78,7 +78,7 @@ async def run_video_dubbing_pipeline(
     voice_type: str = "male",
     tone: str = "standard",
     engine_name: str = "auto",
-    audio_mode: str = "ducking",
+    audio_mode: str = "replace",
     burn_subtitles: bool = False,
     max_duration: Optional[int] = 90,
     api_key: Optional[str] = None,
@@ -207,7 +207,7 @@ async def run_video_dubbing_pipeline(
             rate=voice_rate,
             pitch=voice_pitch,
             volume=voice_volume,
-            max_concurrency=20,
+            max_concurrency=4,
             enhance=True,
             on_progress=lambda done, total: (
                 job.update({"progress": 70 + int(done / total * 13), "stage": f"Synthesizing voice ({done}/{total})"}),
