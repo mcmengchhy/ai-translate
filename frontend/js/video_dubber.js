@@ -271,6 +271,7 @@ function displayCompletedVideo(job) {
 
     if (!job || !job.result) return;
 
+    currentDownloadJob = job;
     studioJobId = job.id;
     studioSegments = JSON.parse(JSON.stringify(job.segments || []));
 
@@ -280,8 +281,12 @@ function displayCompletedVideo(job) {
     });
 
     videoPlayer.src = job.result.download_url;
-    downloadVideoBtn.href = job.result.download_url;
-    downloadSrtBtn.href = job.result.srt_url;
+    if (downloadVideoBtn) {
+        downloadVideoBtn.onclick = (e) => openDownloadModal('video', e);
+    }
+    if (downloadSrtBtn) {
+        downloadSrtBtn.onclick = (e) => openDownloadModal('srt', e);
+    }
 
     // Attach video player time listener for subtitle sync
     setupVideoSyncListener(videoPlayer);
@@ -713,8 +718,9 @@ async function studioRerenderVideo() {
         videoPlayer.load();
         videoPlayer.play();
 
-        dlVideoBtn.href = data.result.download_url;
-        dlSrtBtn.href = data.result.srt_url;
+        if (currentDownloadJob) {
+            currentDownloadJob.result = data.result;
+        }
 
         studioSegments = data.segments;
         studioDirty = false;
@@ -865,4 +871,206 @@ document.addEventListener('DOMContentLoaded', () => {
     if (jobParam) {
         loadCompletedDemoJob(jobParam);
     }
+
+    // Bind Enter key in download filename input
+    document.getElementById('download-filename-input')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            executeDownloadWithAnimation();
+        }
+    });
 });
+
+// =========================================================================
+// CUSTOM DOWNLOAD DIALOG & PROGRESS ANIMATION
+// =========================================================================
+let currentDownloadJob = null;
+let currentDownloadType = 'video'; // 'video' | 'srt'
+
+function openDownloadModal(type = 'video', event = null) {
+    if (event) event.preventDefault();
+    currentDownloadType = type;
+
+    const modal = document.getElementById('download-modal');
+    if (!modal) return;
+
+    const titleEl = document.getElementById('download-modal-title');
+    const iconEl = document.getElementById('download-file-icon');
+    const typeEl = document.getElementById('download-file-type');
+    const metaEl = document.getElementById('download-file-meta');
+    const extBadge = document.getElementById('download-ext-badge');
+    const extSuffix = document.getElementById('filename-ext-suffix');
+    const filenameInput = document.getElementById('download-filename-input');
+    const progressBox = document.getElementById('download-progress-box');
+    const confirmBtn = document.getElementById('download-confirm-btn');
+    const cancelBtn = document.getElementById('download-cancel-btn');
+
+    // Reset progress & state
+    if (progressBox) progressBox.style.display = 'none';
+    if (cancelBtn) cancelBtn.disabled = false;
+    if (confirmBtn) {
+        confirmBtn.classList.remove('downloading', 'success');
+        confirmBtn.disabled = false;
+        confirmBtn.innerHTML = '<span class="btn-content"><i class="ph ph-download-simple"></i> Download Now</span>';
+    }
+
+    const jobTitle = currentDownloadJob?.title || 'dubbed_video';
+    const cleanTitle = jobTitle.replace(/[^a-zA-Z0-9_\-\u1780-\u17FF\s]/g, '').trim().replace(/\s+/g, '_') || 'video';
+
+    if (type === 'video') {
+        if (titleEl) titleEl.innerHTML = '<i class="ph ph-download-simple"></i> Download Dubbed Video';
+        if (iconEl) iconEl.innerHTML = '<i class="ph ph-video-camera"></i>';
+        if (typeEl) typeEl.textContent = 'MP4 Video (Dubbed Khmer Voice)';
+        if (metaEl) metaEl.textContent = 'Full HD Video Track • 256kbps Master Audio';
+        if (extBadge) extBadge.textContent = '.mp4';
+        if (extSuffix) extSuffix.textContent = '.mp4';
+        if (filenameInput) filenameInput.value = `${cleanTitle}_khmer_dubbed`;
+    } else {
+        if (titleEl) titleEl.innerHTML = '<i class="ph ph-file-text"></i> Download Khmer Subtitles';
+        if (iconEl) iconEl.innerHTML = '<i class="ph ph-file-text"></i>';
+        if (typeEl) typeEl.textContent = 'SubRip Subtitle File (.srt)';
+        if (metaEl) metaEl.textContent = 'Synchronized UTF-8 Khmer Dialogue Subtitles';
+        if (extBadge) extBadge.textContent = '.srt';
+        if (extSuffix) extSuffix.textContent = '.srt';
+        if (filenameInput) filenameInput.value = `${cleanTitle}_khmer_subtitles`;
+    }
+
+    modal.classList.add('active');
+    setTimeout(() => {
+        if (filenameInput) {
+            filenameInput.focus();
+            filenameInput.select();
+        }
+    }, 120);
+}
+
+function closeDownloadModal() {
+    const modal = document.getElementById('download-modal');
+    if (modal) modal.classList.remove('active');
+}
+
+async function executeDownloadWithAnimation() {
+    const filenameInput = document.getElementById('download-filename-input');
+    const rawName = (filenameInput?.value || '').trim() || (currentDownloadType === 'video' ? 'dubbed_video' : 'subtitles');
+    const ext = currentDownloadType === 'video' ? '.mp4' : '.srt';
+    const cleanBase = rawName.replace(new RegExp(`\\${ext}$`, 'i'), '').trim();
+    const finalFilename = `${cleanBase}${ext}`;
+
+    const downloadUrl = currentDownloadType === 'video'
+        ? currentDownloadJob?.result?.download_url
+        : currentDownloadJob?.result?.srt_url;
+
+    if (!downloadUrl) {
+        showToast("Download URL not found for this job.", "error");
+        return;
+    }
+
+    const progressBox = document.getElementById('download-progress-box');
+    const animFill = document.getElementById('download-anim-fill');
+    const statusText = document.getElementById('download-status-text');
+    const percentText = document.getElementById('download-percent-text');
+    const confirmBtn = document.getElementById('download-confirm-btn');
+    const cancelBtn = document.getElementById('download-cancel-btn');
+
+    if (progressBox) progressBox.style.display = 'flex';
+    if (confirmBtn) {
+        confirmBtn.classList.add('downloading');
+        confirmBtn.disabled = true;
+        confirmBtn.innerHTML = '<i class="ph ph-spinner ph-spin"></i> Downloading...';
+    }
+    if (cancelBtn) cancelBtn.disabled = true;
+
+    if (animFill) animFill.style.width = '12%';
+    if (percentText) percentText.textContent = '12%';
+    if (statusText) statusText.innerHTML = '<i class="ph ph-arrow-circle-down ph-pulse"></i> Initializing transfer...';
+
+    try {
+        const response = await fetch(downloadUrl);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        const contentLength = +response.headers.get('Content-Length');
+        let blob;
+
+        if (contentLength && window.ReadableStream && response.body) {
+            const reader = response.body.getReader();
+            let receivedLength = 0;
+            const chunks = [];
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value);
+                receivedLength += value.length;
+                const pct = Math.min(98, Math.round((receivedLength / contentLength) * 100));
+                if (animFill) animFill.style.width = `${pct}%`;
+                if (percentText) percentText.textContent = `${pct}%`;
+                const mb = (receivedLength / (1024 * 1024)).toFixed(1);
+                const totalMb = (contentLength / (1024 * 1024)).toFixed(1);
+                if (statusText) statusText.innerHTML = `<i class="ph ph-arrow-circle-down ph-spin"></i> Transferring ${mb} MB / ${totalMb} MB...`;
+            }
+            blob = new Blob(chunks, { type: currentDownloadType === 'video' ? 'video/mp4' : 'text/plain;charset=utf-8' });
+        } else {
+            let sim = 20;
+            const interval = setInterval(() => {
+                if (sim < 92) {
+                    sim += Math.floor(Math.random() * 18) + 6;
+                    if (animFill) animFill.style.width = `${sim}%`;
+                    if (percentText) percentText.textContent = `${sim}%`;
+                }
+            }, 100);
+            blob = await response.blob();
+            clearInterval(interval);
+        }
+
+        // 100% Success Celebration
+        if (animFill) animFill.style.width = '100%';
+        if (percentText) percentText.textContent = '100%';
+        if (statusText) statusText.innerHTML = '<i class="ph ph-check-circle" style="color: #10b981;"></i> Download ready!';
+
+        if (confirmBtn) {
+            confirmBtn.classList.remove('downloading');
+            confirmBtn.classList.add('success');
+            confirmBtn.innerHTML = '<i class="ph ph-check-bold"></i> Saved!';
+        }
+
+        // Trigger native download with user's custom name
+        const blobUrl = URL.createObjectURL(blob);
+        const tempLink = document.createElement('a');
+        tempLink.href = blobUrl;
+        tempLink.download = finalFilename;
+        document.body.appendChild(tempLink);
+        tempLink.click();
+        document.body.removeChild(tempLink);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+
+        showToast(`🎉 Successfully saved as "${finalFilename}"`, "success");
+
+        setTimeout(() => {
+            closeDownloadModal();
+            if (cancelBtn) cancelBtn.disabled = false;
+        }, 1200);
+
+    } catch (err) {
+        console.warn("Direct stream fetch failed, using anchor fallback:", err);
+        const tempLink = document.createElement('a');
+        tempLink.href = downloadUrl;
+        tempLink.download = finalFilename;
+        document.body.appendChild(tempLink);
+        tempLink.click();
+        document.body.removeChild(tempLink);
+
+        if (animFill) animFill.style.width = '100%';
+        if (percentText) percentText.textContent = '100%';
+        if (statusText) statusText.innerHTML = '<i class="ph ph-check-circle" style="color: #10b981;"></i> Download triggered!';
+        if (confirmBtn) {
+            confirmBtn.classList.remove('downloading');
+            confirmBtn.classList.add('success');
+            confirmBtn.innerHTML = '<i class="ph ph-check-bold"></i> Started!';
+        }
+
+        setTimeout(() => {
+            closeDownloadModal();
+            if (cancelBtn) cancelBtn.disabled = false;
+        }, 1200);
+    }
+}

@@ -333,12 +333,12 @@
                                     <button class="btn-ghost btn-xs" onclick="studioJumpNextCue()" title="Next Cue"><i class="ph ph-skip-forward"></i> Next</button>
                                 </div>
                                 <div class="results-actions">
-                                    <a class="btn-primary btn-xs" id="download-dubbed-video-btn" download>
+                                    <button class="btn-primary btn-xs" id="download-dubbed-video-btn" onclick="openDownloadModal('video', event)">
                                         <i class="ph ph-download-simple"></i> Download MP4
-                                    </a>
-                                    <a class="btn-secondary btn-xs" id="download-dubbed-srt-btn" download>
+                                    </button>
+                                    <button class="btn-secondary btn-xs" id="download-dubbed-srt-btn" onclick="openDownloadModal('srt', event)">
                                         <i class="ph ph-file-text"></i> Download SRT
-                                    </a>
+                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -629,6 +629,58 @@
         </section>
 
     </main>
+
+    <!-- Download File Name & Animation Modal -->
+    <div class="modal-backdrop" id="download-modal">
+        <div class="modal-card download-modal-card">
+            <div class="modal-header">
+                <h3 id="download-modal-title"><i class="ph ph-download-simple"></i> Download Dubbed Video</h3>
+                <button class="icon-button" onclick="closeDownloadModal()"><i class="ph ph-x"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="download-preview-banner">
+                    <div class="download-file-icon" id="download-file-icon">
+                        <i class="ph ph-video-camera"></i>
+                    </div>
+                    <div class="download-file-details">
+                        <div class="download-file-type" id="download-file-type">MP4 Video File</div>
+                        <div class="download-file-meta" id="download-file-meta">High Definition • 256kbps Khmer Voice</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="download-filename-input">
+                        File Name
+                        <span class="label-badge" id="download-ext-badge">.mp4</span>
+                    </label>
+                    <div class="filename-input-wrap">
+                        <input type="text" id="download-filename-input" placeholder="Enter file name..." autofocus>
+                        <span class="filename-ext-suffix" id="filename-ext-suffix">.mp4</span>
+                    </div>
+                    <small>Customize the filename before saving to your computer.</small>
+                </div>
+
+                <!-- Animated Download Progress State -->
+                <div class="download-progress-box" id="download-progress-box" style="display: none;">
+                    <div class="download-anim-bar">
+                        <div class="download-anim-fill" id="download-anim-fill"></div>
+                    </div>
+                    <div class="download-status-line">
+                        <span id="download-status-text"><i class="ph ph-spinner ph-spin"></i> Preparing download...</span>
+                        <span id="download-percent-text">0%</span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" id="download-cancel-btn" onclick="closeDownloadModal()">Cancel</button>
+                <button class="btn-primary download-action-btn" id="download-confirm-btn" onclick="executeDownloadWithAnimation()">
+                    <span class="btn-content">
+                        <i class="ph ph-download-simple"></i> Download Now
+                    </span>
+                </button>
+            </div>
+        </div>
+    </div>
 
     <!-- Settings Modal -->
     <div class="modal-backdrop" id="settings-modal">
