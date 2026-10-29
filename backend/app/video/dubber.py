@@ -292,7 +292,7 @@ async def assemble_dubbed_video(
     # Important audio mixing settings:
     # 1. ALWAYS pass 'normalize=0:dropout_transition=0' to amix so Khmer voice volume is never halved (-6dB)!
     # 2. Boost Khmer voice volume (volume=1.2) for maximum clarity and presence.
-    # 3. For sidechain ducking: duck the background audio aggressively (ratio=28, threshold=0.008)
+    # 3. For sidechain ducking: duck the background audio aggressively (ratio=20, threshold=0.008)
     #    so the original foreign speech does not clash or play simultaneously with the Khmer speech!
     if bg_volume is not None:
         if bg_volume <= 0.001:
@@ -301,7 +301,7 @@ async def assemble_dubbed_video(
         elif bg_volume < 0:
             # Smart Cinema Ducking
             audio_filter = (
-                "[0:a][1:a]sidechaincompress=threshold=0.008:ratio=28:attack=5:release=350[bg];"
+                "[0:a][1:a]sidechaincompress=threshold=0.008:ratio=20:attack=5:release=350[bg];"
                 "[1:a]volume=1.2[khmer];"
                 "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
             )
@@ -314,7 +314,7 @@ async def assemble_dubbed_video(
     elif audio_mode in ("smart_sidechain", "smart"):
         # Smart Cinema Ducking (mutes foreign voice during speech, keeps BGM in pauses)
         audio_filter = (
-            "[0:a][1:a]sidechaincompress=threshold=0.008:ratio=28:attack=5:release=350[bg];"
+            "[0:a][1:a]sidechaincompress=threshold=0.008:ratio=20:attack=5:release=350[bg];"
             "[1:a]volume=1.2[khmer];"
             "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
