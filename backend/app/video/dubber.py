@@ -176,7 +176,7 @@ def build_master_audio_track(
 
             try:
                 container = av.open(clip_path)
-                resampler = av.AudioResampler(format="s16", layout="stereo", rate=sample_rate)
+                resampler = av.AudioResampler(format="s16p", layout="stereo", rate=sample_rate)
                 pcm_chunks = []
                 for frame in container.decode(audio=0):
                     for rf in resampler.resample(frame):
@@ -186,8 +186,15 @@ def build_master_audio_track(
                 if not pcm_chunks:
                     continue
 
-                # Concatenate frames: planar stereo ndarray has shape (2, N_samples)
-                clip_arr = np.concatenate(pcm_chunks, axis=1).T  # Transpose to (N_samples, 2)
+                # Planar stereo ndarray has shape (2, N_samples) -> transpose to (N_samples, 2)
+                raw_arr = np.concatenate(pcm_chunks, axis=1)
+                if raw_arr.ndim == 2 and raw_arr.shape[0] == 2:
+                    clip_arr = raw_arr.T
+                elif raw_arr.ndim == 2 and raw_arr.shape[1] == 2:
+                    clip_arr = raw_arr
+                else:
+                    clip_arr = raw_arr.reshape(-1, 2)
+
                 clip_len = clip_arr.shape[0]
 
                 end_idx = min(start_idx + clip_len, total_samples)
