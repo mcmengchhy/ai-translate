@@ -98,13 +98,7 @@ async def download_bilibili_direct(
         mp4_stream_url = durl["url"]
         stream_size = durl.get("size", 0)
 
-        # 3. Download video (Range chunk if bounded, or full stream if 0/None)
-        cdn_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://www.bilibili.com/",
-        }
-
-        chunk_path = output_dir / f"{bvid}_raw.mp4"
+        # 3. Stream direct to MP4 using FFmpeg (fast, losslessly copies audio/video with valid MP4 container)
         final_video_path = output_dir / f"{bvid}.mp4"
 
         # If full video already downloaded, reuse it immediately
@@ -125,56 +119,23 @@ async def download_bilibili_direct(
                     "platform": "Bilibili",
                 }
 
+        headers_str = "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nReferer: https://www.bilibili.com/\r\n"
+        cmd = ["ffmpeg", "-y", "-headers", headers_str, "-i", mp4_stream_url]
         if max_clip_seconds and max_clip_seconds > 0 and max_clip_seconds < duration:
-            # Estimate bytes for duration (~120KB/s)
-            clip_bytes = min(stream_size or 500 * 1024 * 1024, int(max_clip_seconds * 140 * 1024) + 4194304)
-            cdn_headers["Range"] = f"bytes=0-{clip_bytes}"
-            logger.info(f"Downloading Bilibili clip ({max_clip_seconds}s) for {bvid}...")
-
-            cdn_resp = await client.get(mp4_stream_url, headers=cdn_headers)
-            if cdn_resp.status_code not in (200, 206):
-                raise RuntimeError(f"CDN returned {cdn_resp.status_code}")
-
-            with open(chunk_path, "wb") as f:
-                f.write(cdn_resp.content)
-
-            clip_seconds = min(max_clip_seconds, duration)
-            cmd_remux = [
-                "ffmpeg", "-y",
-                "-i", str(chunk_path),
-                "-t", str(clip_seconds),
-                "-c", "copy",
-                str(final_video_path)
-            ]
+            clip_seconds = max_clip_seconds
+            cmd.extend(["-t", str(clip_seconds)])
+            logger.info(f"Streaming Bilibili clip ({max_clip_seconds}s) for {bvid} directly via FFmpeg...")
         else:
-            # Full Video Download via curl with auto-resume
-            logger.info(f"Downloading full Bilibili video {bvid} via curl (Duration: {duration}s / {duration//60} mins)...")
-            target_size = stream_size or 0
-            for _ in range(25):
-                curr_size = chunk_path.stat().st_size if chunk_path.exists() else 0
-                if target_size > 0 and curr_size >= target_size:
-                    break
-                cmd_curl = [
-                    "curl", "-L", "-C", "-",
-                    "--retry", "5",
-                    "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "-H", "Referer: https://www.bilibili.com/",
-                    "-o", str(chunk_path),
-                    mp4_stream_url
-                ]
-                subprocess.run(cmd_curl)
-                if target_size == 0 and chunk_path.exists() and chunk_path.stat().st_size > 1024*1024:
-                    break
-
             clip_seconds = duration
-            cmd_remux = [
-                "ffmpeg", "-y",
-                "-i", str(chunk_path),
-                "-c", "copy",
-                str(final_video_path)
-            ]
+            logger.info(f"Streaming full Bilibili video {bvid} ({duration}s) directly via FFmpeg...")
 
-        subprocess.run(cmd_remux, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cmd.extend(["-c", "copy", "-movflags", "+faststart", str(final_video_path)])
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        )
 
         return {
             "id": bvid,
@@ -233,6 +194,8 @@ async def download_video(
             return res
         except Exception as e:
             logger.warning(f"Direct Bilibili download failed: {e}. Falling back to yt-dlp...")
+            if not url.startswith("http"):
+                url = f"https://www.bilibili.com/video/{bvid}"
 
     # 2. Universal Downloader (YouTube, TikTok, Facebook, Twitter, Douyin, Vimeo, Reddit, etc.)
     from .dubber import get_media_duration
@@ -250,7 +213,7 @@ async def download_video(
         'subtitleslangs': ['zh.*', 'en.*', 'km.*'],
         'subtitlesformat': 'srt/vtt/best',
         'nocheckcertificate': True,
-        'ignoreerrors': True,
+        'ignoreerrors': False,
         'quiet': False,
     }
 
@@ -265,8 +228,10 @@ async def download_video(
     def _sync_download():
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                return info
+                extracted = ydl.extract_info(url, download=True)
+                if not extracted:
+                    raise RuntimeError(f"Could not extract video metadata from {platform} ({url})")
+                return extracted
         except Exception as err:
             # If download_ranges caused an issue on certain platforms, retry without ranges and trim with ffmpeg
             if 'download_ranges' in ydl_opts:
@@ -274,7 +239,10 @@ async def download_video(
                 ydl_opts.pop('download_ranges', None)
                 ydl_opts.pop('force_keyframes_at_cuts', None)
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl_retry:
-                    return ydl_retry.extract_info(url, download=True)
+                    extracted_retry = ydl_retry.extract_info(url, download=True)
+                    if not extracted_retry:
+                        raise RuntimeError(f"Retry could not extract video metadata from {platform} ({url})")
+                    return extracted_retry
             raise
 
     loop = asyncio.get_event_loop()
@@ -302,6 +270,9 @@ async def download_video(
                 "platform": "Direct Video",
             }
         raise RuntimeError(f"Failed to download video from {platform} ({url}): {e}")
+
+    if not info:
+        raise RuntimeError(f"Failed to download video from {platform} ({url}). No video metadata received.")
 
     video_id = info.get('id', 'video')
     title = info.get('title', 'video')
