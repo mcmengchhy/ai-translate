@@ -187,16 +187,31 @@ async function handleVoicePreview() {
     }
 }
 
-// Start Dubbing from Bilibili / Web URL
+// Client-side video platform detector
+function detectPlatformClient(url) {
+    const lower = (url || '').toLowerCase().trim();
+    if (lower.includes('youtube.com') || lower.includes('youtu.be')) return 'YouTube';
+    if (lower.includes('bilibili.com') || lower.includes('b23.tv') || /^bv[a-za-z0-9]{10}$/i.test(url.trim())) return 'Bilibili';
+    if (lower.includes('tiktok.com')) return 'TikTok';
+    if (lower.includes('douyin.com')) return 'Douyin';
+    if (lower.includes('facebook.com') || lower.includes('fb.watch')) return 'Facebook';
+    if (lower.includes('instagram.com')) return 'Instagram';
+    if (lower.includes('twitter.com') || lower.includes('x.com')) return 'X (Twitter)';
+    if (/\.(mp4|mov|webm|m3u8|mkv)($|\?)/i.test(lower)) return 'Direct Video';
+    return 'Web Video';
+}
+
+// Start Dubbing from YouTube, Bilibili or Web URL
 async function handleUrlDubbing() {
     const urlInput = document.getElementById('video-url-input');
     const url = urlInput.value.trim();
 
     if (!url) {
-        showToast("Please enter a Bilibili or video URL!", "error");
+        showToast("Please enter a video URL (YouTube, Bilibili, TikTok, Facebook, etc.)!", "error");
         return;
     }
 
+    const platform = detectPlatformClient(url);
     const voiceType = document.getElementById('video-voice-select').value;
     const tone = document.getElementById('video-tone-select').value;
     const audioMode = document.getElementById('video-audio-mode').value;
@@ -233,7 +248,7 @@ async function handleUrlDubbing() {
         const data = await resp.json();
         activeVideoJobId = data.job_id;
         startPollingJobStatus(activeVideoJobId);
-        showToast("Dubbing job queued! Processing video...", "success");
+        showToast(`🎉 [${platform}] Dubbing job queued! Downloading and translating...`, "success");
     } catch (err) {
         setPipelineUIState('idle');
         showToast(err.message, "error");
@@ -954,6 +969,13 @@ function setPipelineUIState(state) {
     } else {
         pipelineCard.style.display = 'none';
     }
+}
+
+function fillYouTubeSample() {
+    const sampleUrl = "https://www.youtube.com/watch?v=jNQXAC9IVRw";
+    const urlInput = document.getElementById('video-url-input');
+    if (urlInput) urlInput.value = sampleUrl;
+    showToast("Loaded YouTube sample video! Ready to dub.", "success");
 }
 
 function fillBilibiliSample() {

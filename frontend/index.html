@@ -31,7 +31,7 @@
             </div>
             <div class="brand-info">
                 <h1>Khmer AI Video Dubber</h1>
-                <span class="brand-tag">Video Auto-Translate & Khmer Voiceover (Bilibili / Web)</span>
+                <span class="brand-tag">Video Auto-Translate & Khmer Voiceover (YouTube / Bilibili / Web)</span>
             </div>
         </div>
 
@@ -76,9 +76,9 @@
                 <!-- Hero Introduction Card -->
                 <div class="video-hero-card">
                     <div class="hero-text-block">
-                        <div class="hero-badge"><i class="ph ph-sparkle"></i> Bilibili / Video to Khmer Voice</div>
+                        <div class="hero-badge"><i class="ph ph-sparkle"></i> YouTube, Bilibili & Web Video to Khmer Voice</div>
                         <h2>Auto-Translate & Dub Any Video into Khmer (បញ្ចូលសំឡេងខ្មែរ)</h2>
-                        <p>Paste a <strong>Bilibili</strong> link, YouTube video, or upload a video. The pipeline automatically downloads the video, transcribes the speech, translates it to natural Khmer with tone preservation, synthesizes realistic Khmer voiceover, and mixes the audio!</p>
+                        <p>Paste a <strong>YouTube</strong> link, <strong>Bilibili</strong> video, <strong>TikTok</strong>, or social video link, or upload your own video file. The pipeline automatically extracts video & speech, translates to natural Khmer with tone preservation, synthesizes studio-grade Khmer voiceover, and lip-syncs the audio!</p>
                     </div>
 
                     <!-- Voice & Audio Configuration Bar -->
@@ -210,15 +210,15 @@
 
                 <!-- Input Methods: Bilibili/URL or File Upload -->
                 <div class="dub-inputs-grid">
-                    <!-- Option A: Bilibili / URL -->
+                    <!-- Option A: YouTube, Bilibili & Web Video URL -->
                     <div class="input-card">
                         <div class="input-card-header">
                             <div class="input-icon-pill">
                                 <i class="ph ph-link"></i>
                             </div>
                             <div>
-                                <h3>Download from Bilibili or URL</h3>
-                                <p>Supports Bilibili (bilibili.com/video/BV...), YouTube, and direct video links.</p>
+                                <h3>Download from YouTube, Bilibili or Video URL</h3>
+                                <p>Supports YouTube (videos & shorts), Bilibili, TikTok, Facebook, Twitter/X, Douyin, and direct video links (.mp4, .m3u8).</p>
                             </div>
                         </div>
                         
@@ -227,14 +227,29 @@
                                 type="text" 
                                 id="video-url-input" 
                                 class="styled-input" 
-                                placeholder="Paste Bilibili link (e.g. https://www.bilibili.com/video/BV1...)"
+                                placeholder="Paste video link (YouTube, Bilibili, TikTok, Facebook, Twitter, MP4...)"
                             >
-                            <button class="btn-ghost btn-sm" onclick="fillBilibiliSample()" title="Fill sample URL for quick test">
-                                <i class="ph ph-lightbulb"></i> Fill BV1Foa16yEAh
-                            </button>
-                            <button class="btn-ghost btn-sm" onclick="loadCompletedDemoJob('bea1cc9b')" title="Watch rendered result for BV1Foa16yEAh" style="border-color: rgba(168, 85, 247, 0.4); color: #c084fc;">
-                                <i class="ph ph-play-circle" style="color: #a855f7;"></i> Play BV1Foa16yEAh
-                            </button>
+                            <div class="sample-btn-row">
+                                <button type="button" class="btn-ghost btn-sm" onclick="fillYouTubeSample()" title="Fill sample YouTube video">
+                                    <i class="ph ph-youtube-logo" style="color: #ef4444; font-size: 15px;"></i> YouTube Sample
+                                </button>
+                                <button type="button" class="btn-ghost btn-sm" onclick="fillBilibiliSample()" title="Fill sample Bilibili video">
+                                    <i class="ph ph-television" style="color: #00a1d6; font-size: 15px;"></i> Bilibili BV1Foa16yEAh
+                                </button>
+                                <button type="button" class="btn-ghost btn-sm" onclick="loadCompletedDemoJob('bea1cc9b')" title="Watch rendered result for BV1Foa16yEAh" style="border-color: rgba(168, 85, 247, 0.4); color: #c084fc;">
+                                    <i class="ph ph-play-circle" style="color: #a855f7; font-size: 15px;"></i> Play Demo
+                                </button>
+                            </div>
+
+                            <!-- Supported Platforms Badges -->
+                            <div class="supported-platforms-bar">
+                                <span class="platform-badge" title="YouTube & Shorts"><i class="ph ph-youtube-logo" style="color: #ef4444;"></i> YouTube</span>
+                                <span class="platform-badge" title="Bilibili"><i class="ph ph-television" style="color: #00a1d6;"></i> Bilibili</span>
+                                <span class="platform-badge" title="TikTok & Douyin"><i class="ph ph-tiktok-logo" style="color: #22d3ee;"></i> TikTok</span>
+                                <span class="platform-badge" title="Facebook Videos & Reels"><i class="ph ph-facebook-logo" style="color: #3b82f6;"></i> Facebook</span>
+                                <span class="platform-badge" title="X / Twitter"><i class="ph ph-x-logo" style="color: #e2e8f0;"></i> X</span>
+                                <span class="platform-badge" title="Direct Video File or HLS Stream"><i class="ph ph-globe" style="color: #10b981;"></i> MP4 / M3U8</span>
+                            </div>
                         </div>
 
                         <button class="btn-primary btn-block" id="start-url-dub-btn">

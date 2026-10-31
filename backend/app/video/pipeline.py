@@ -102,9 +102,14 @@ async def run_video_dubbing_pipeline(
             dl_info = await download_video(video_source, max_clip_seconds=max_duration)
             video_path = dl_info["video_path"]
             job["title"] = dl_info.get("title", "Video")
+            job["platform"] = dl_info.get("platform", "Web Video")
+            if not subtitle_file_path and dl_info.get("sub_path"):
+                subtitle_file_path = dl_info["sub_path"]
+                logger.info(f"Using downloaded subtitle track: {subtitle_file_path}")
         else:
             video_path = video_source
             job["title"] = Path(video_path).stem
+            job["platform"] = "Uploaded File"
 
         job["video_path"] = str(video_path)
         job["progress"] = 25
