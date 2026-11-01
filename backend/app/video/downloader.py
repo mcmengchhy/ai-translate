@@ -122,6 +122,16 @@ async def download_bilibili_direct(
                 logger.warning(f"Existing file on disk is incomplete ({existing_dur:.1f}s / {duration}s). Removing and re-downloading...")
                 final_video_path.unlink(missing_ok=True)
 
+        # For multi-hour or long videos (> 1800s), Bilibili's unauthenticated single-stream HTML5 endpoint
+        # automatically severs/times out the connection after ~20-50 minutes.
+        # Delegate immediately to chunked yt-dlp to avoid wasting time on truncated downloads!
+        if duration > 1800 and (not max_clip_seconds or max_clip_seconds == 0 or max_clip_seconds > 1800):
+            logger.info(
+                f"Bilibili video is long ({duration}s > 1800s). Direct unchunked stream will be truncated by CDN. "
+                f"Delegating immediately to chunked yt-dlp..."
+            )
+            raise RuntimeError(f"Long Bilibili video ({duration}s) requires chunked multi-part downloader.")
+
         headers_str = "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nReferer: https://www.bilibili.com/\r\n"
         cmd = [
             "ffmpeg", "-y",
@@ -228,7 +238,7 @@ async def download_video(
     has_node = bool(node_bin and Path(node_bin).exists())
 
     ydl_opts: Dict[str, Any] = {
-        'format': 'bestvideo*+bestaudio/best',
+        'format': 'bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/bestvideo[vcodec^=avc]+bestaudio/bestvideo*+bestaudio/best',
         'merge_output_format': 'mp4',
         'outtmpl': str(dest_dir / '%(id)s.%(ext)s'),
         'writesubtitles': True,
@@ -238,6 +248,11 @@ async def download_video(
         'nocheckcertificate': True,
         'ignoreerrors': False,
         'quiet': False,
+        'http_chunk_size': 10485760,  # 10MB chunking prevents CDN socket dropouts on large/multi-hour streams
+        'concurrent_fragment_downloads': 4,
+        'retries': 30,
+        'fragment_retries': 30,
+        'buffersize': 1048576,
     }
 
     if has_node:
