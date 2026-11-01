@@ -811,12 +811,12 @@ async function studioRerenderVideo() {
     btn.innerHTML = `<i class="ph ph-spinner ph-spin"></i> Re-rendering Video...`;
     btn.disabled = true;
 
-    const bgVol = parseFloat(document.getElementById('studio-bg-volume').value || "0.0");
-    let audioMode = "replace";
+    const bgVol = parseFloat(document.getElementById('studio-bg-volume').value || "-1.0");
+    let audioMode = "smart_cinema";
     if (bgVol <= 0.001 && bgVol >= 0) {
         audioMode = "replace";
     } else if (bgVol < 0) {
-        audioMode = "smart_sidechain";
+        audioMode = "smart_cinema";
     } else if (bgVol > 0 && bgVol <= 0.06) {
         audioMode = "duck_subtle";
     } else if (bgVol > 0.06) {

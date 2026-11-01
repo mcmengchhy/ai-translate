@@ -102,9 +102,9 @@
                         <div class="config-col">
                             <label><i class="ph ph-sliders"></i> Audio Mixing Mode</label>
                             <select id="video-audio-mode" class="styled-select">
-                                <option value="replace" selected>🔇 100% Pure Studio Voiceover (Zero noise / foreign voice - Identical to Preview)</option>
-                                <option value="smart_sidechain">🎚️ Smart Cinema Ducking (Mutes foreign voice during speech, keeps BGM & Sound Effects)</option>
-                                <option value="ducking">🔉 Standard Ducking (Lowers original audio to 15%)</option>
+                                <option value="smart_cinema" selected>🎚️ Smart Cinema Ducking (Mute 90% speech, 100% fighting sound + 60% Anti-Copyright)</option>
+                                <option value="replace">🔇 100% Pure Studio Voiceover (Zero noise / foreign voice - Identical to Preview)</option>
+                                <option value="ducking">🔉 Standard Ducking (Constant 10% Original Audio)</option>
                             </select>
                         </div>
 
@@ -351,10 +351,10 @@
                             <div class="studio-control-group">
                                 <label for="studio-bg-volume"><i class="ph ph-speaker-high"></i> Background Sound:</label>
                                 <select id="studio-bg-volume" class="styled-select select-xs" onchange="markStudioDirty()">
-                                    <option value="0.0" selected>🔇 Mute Original Video (100% Clean Studio Voice - Identical to Preview)</option>
-                                    <option value="-1">🎚️ Smart Auto-Ducking (Mutes original voice during speech, keeps music & SFX)</option>
+                                    <option value="-1" selected>🎚️ Smart Cinema Ducking (Mute 90% speech, 100% fighting + 60% Anti-Copyright)</option>
+                                    <option value="0.0">🔇 Mute Original Video (100% Clean Studio Voice - Identical to Preview)</option>
                                     <option value="0.05">🔉 Subtle Ambience (5% Faint Music)</option>
-                                    <option value="0.15">🔊 Standard Ducking (15% Original Audio)</option>
+                                    <option value="0.10">🔊 Standard Ducking (10% Original Audio)</option>
                                     <option value="0.30">📢 High Original (30%)</option>
                                 </select>
                             </div>

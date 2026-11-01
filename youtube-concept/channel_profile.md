@@ -60,6 +60,7 @@ CineKhmer នាំមកជូនលោកអ្នកនូវការសង�
 
 ---
 
+
 ### 🎙️ Option 3: "VoxKhmer Studio" (Premium Studio & Audio Voiceover)
 - **Display Name:** `VoxKhmer | សំឡេងខ្មែរ AI`
 - **YouTube Handle:** `@VoxKhmer` or `@VoxKhmerStudio`
@@ -112,3 +113,4 @@ CineKhmer នាំមកជូនលោកអ្នកនូវការសង�
 - **Profile Picture (Avatar):** `800 x 800 px` (Centered circular crop)
 - **Channel Banner Header:** `2560 x 1440 px` (Safe area: `1232 x 338 px` in the center)
 - **Video Watermark (Bottom Right):** `150 x 150 px` PNG with transparency
+

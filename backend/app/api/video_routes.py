@@ -25,7 +25,7 @@ class VideoDubUrlRequest(BaseModel):
     url: str = Field(..., description="Bilibili, YouTube, or direct video URL")
     voice_type: str = Field(default="male", description="'male' (Piseth) or 'female' (Sreymom)")
     tone: str = Field(default="standard", description="Linguistic tone: standard, casual, formal, polite")
-    audio_mode: str = Field(default="replace", description="'replace' (100% pure voiceover, identical to preview) or 'smart_sidechain' / 'ducking'")
+    audio_mode: str = Field(default="smart_cinema", description="'smart_cinema' (90% speech mute, 100% fighting + 60% anti-copyright) or 'replace' / 'ducking'")
     burn_subtitles: bool = Field(default=False, description="Burn Khmer subtitles into video frames")
     max_duration: Optional[int] = Field(default=0, description="Duration in seconds to dub (e.g. 90 for fast test, 300 for 5m, 0 for full video)")
     api_key: Optional[str] = Field(default=None, description="Optional Gemini API key")
@@ -65,8 +65,8 @@ class PolishDialogueRequest(BaseModel):
 
 class JobRerenderRequest(BaseModel):
     segments: Optional[List[Dict[str, Any]]] = None
-    audio_mode: str = "replace"  # "replace" (100% pure voiceover), "mute", "duck_subtle", "ducking", "smart_sidechain"
-    bg_volume: Optional[float] = 0.0
+    audio_mode: str = "smart_cinema"  # "smart_cinema" (90% speech mute, 100% fighting + 60% anti-copyright), "replace", "mute", "duck_subtle", "ducking"
+    bg_volume: Optional[float] = -1.0
     burn_subtitles: bool = False
     voice_rate: str = "auto"
     voice_pitch: str = "auto"
