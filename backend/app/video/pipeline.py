@@ -75,7 +75,7 @@ async def run_video_dubbing_pipeline(
     job_id: str,
     video_source: str,  # URL or local file path
     is_url: bool = True,
-    voice_type: str = "male",
+    voice_type: str = "multi",
     tone: str = "standard",
     engine_name: str = "auto",
     audio_mode: str = "smart_cinema",
@@ -238,6 +238,7 @@ async def run_video_dubbing_pipeline(
         job["status"] = "completed"
         job["stage"] = "Complete"
         job["result"] = dub_result
+        job["segments"] = segments  # Update job with final voice-synchronized timestamps and character voice types
         _save_job(job_id)
         logger.info(f"Job {job_id} successfully completed!")
 

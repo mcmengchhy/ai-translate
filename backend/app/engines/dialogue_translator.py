@@ -7,13 +7,56 @@ ensuring natural conversational flow, proper pronouns, and logical film dubbing 
 import json
 import logging
 import asyncio
-from typing import List, Dict, Any, Optional
+import re
+from typing import List, Dict, Any, Optional, Tuple
 import httpx
 
 from . import get_engine
 from ..khmer import normalize_khmer_unicode, polish_khmer_dialogue
 
 logger = logging.getLogger(__name__)
+
+
+def detect_dialogue_gender(text: str, english_intent: str = "", default: str = "male") -> str:
+    """Detects character gender ('male' or 'female') from Chinese and English conversational cues."""
+    c_lower = text.strip().lower()
+    e_lower = english_intent.strip().lower()
+
+    female_cn_markers = [
+        "妈", "娘", "姐", "妹", "婆", "姨", "女", "太太", "夫人", "姑娘",
+        "妃", "后", "丫头", "媳妇", "奶奶", "伯母", "婶", "姑", "小姐", "公主",
+        "皇后", "她", "女侠", "师妹", "师姐", "女儿", "母后"
+    ]
+    male_cn_markers = [
+        "爸", "爹", "哥", "弟", "爷", "叔", "男", "先生", "少爷", "皇帝",
+        "王爷", "他", "儿子", "师傅", "师兄", "师弟", "陛下", "大人", "侍卫",
+        "兄弟", "老公", "老汉", "老子"
+    ]
+
+    female_en_markers = [
+        r"\bshe\b", r"\bher\b", r"\bhers\b", r"\bmom\b", r"\bmother\b",
+        r"\bsister\b", r"\bwife\b", r"\bgirl\b", r"\bwoman\b", r"\bdaughter\b",
+        r"\blady\b", r"\bqueen\b", r"\bprincess\b", r"\bmadam\b", r"\baunt\b",
+        r"\bgrandma\b", r"\bmiss\b", r"\bms\b", r"\bmrs\b"
+    ]
+    male_en_markers = [
+        r"\bhe\b", r"\bhim\b", r"\bhis\b", r"\bdad\b", r"\bfather\b",
+        r"\bbrother\b", r"\bhusband\b", r"\bboy\b", r"\bman\b", r"\bson\b",
+        r"\bking\b", r"\bprince\b", r"\bmaster\b", r"\buncle\b", r"\bgrandpa\b",
+        r"\bmr\b", r"\blord\b"
+    ]
+
+    female_score = sum(1 for m in female_cn_markers if m in c_lower)
+    female_score += sum(1 for p in female_en_markers if re.search(p, e_lower, re.I))
+
+    male_score = sum(1 for m in male_cn_markers if m in c_lower)
+    male_score += sum(1 for p in male_en_markers if re.search(p, e_lower, re.I))
+
+    if female_score > male_score:
+        return "female"
+    if male_score > female_score:
+        return "male"
+    return default
 
 
 async def translate_dialogue_batch_gemini(
@@ -58,10 +101,18 @@ STEP 2 (English -> Authentic Conversational Khmer Film Dubbing):
 - NEVER output Thai (e.g., นี่คือ, ตำลึง), Vietnamese, or robotic transliterations.
 - The "translation" field must contain ONLY pure spoken Khmer dialogue for voice actor dubbing. NEVER include original Chinese characters, pinyin, or explanatory parenthetical glosses like '(ផ្ទះសំណាក់)' or '(还有)'.
 
+STEP 3 (Character Voice & Gender Matching):
+- Accurately identify the character speaker role and gender for each line based on the scene dialogue, vocatives, and context:
+  * "gender": "female" for any female speaker (e.g., mother, daughter, sister, wife, maiden, girl, empress, concubine, grandma).
+  * "gender": "male" for any male speaker (e.g., father, son, brother, husband, boy, man, emperor, master, scholar, grandpa).
+- "speaker": Short character role name (e.g. "Daughter", "Father", "Mother", "System", "Narrator").
+
 OUTPUT FORMAT: Return ONLY a valid JSON array:
 [
   {{
     "id": 1,
+    "gender": "male" or "female",
+    "speaker": "Character Role",
     "english_intent": "Exact English meaning and character intent",
     "translation": "100% natural conversational Khmer film dubbing"
   }}
@@ -88,16 +139,31 @@ OUTPUT FORMAT: Return ONLY a valid JSON array:
             parsed = json.loads(raw_text)
             trans_map = {}
             eng_map = {}
+            gender_map = {}
+            speaker_map = {}
             for item in parsed:
                 if "id" in item:
                     trans_map[item["id"]] = item.get("translation", "")
                     eng_map[item["id"]] = item.get("english_intent", "")
+                    g_val = str(item.get("gender", "")).lower().strip()
+                    gender_map[item["id"]] = "female" if g_val == "female" else ("male" if g_val == "male" else None)
+                    speaker_map[item["id"]] = item.get("speaker", "")
 
             for seg in segments:
                 if seg["id"] in trans_map:
                     seg["translation"] = normalize_khmer_unicode(polish_khmer_dialogue(trans_map[seg["id"]]))
                 if seg["id"] in eng_map and eng_map[seg["id"]]:
                     seg["english_intent"] = eng_map[seg["id"]]
+                
+                # Assign character voice type and gender
+                detected_gender = gender_map.get(seg["id"])
+                if not detected_gender:
+                    detected_gender = detect_dialogue_gender(seg.get("text", ""), seg.get("english_intent", ""))
+                seg["gender"] = detected_gender
+                seg["voice_type"] = detected_gender
+
+                if seg["id"] in speaker_map and speaker_map[seg["id"]]:
+                    seg["speaker"] = speaker_map[seg["id"]]
             return segments
         else:
             raise RuntimeError(f"Gemini API returned {resp.status_code}: {resp.text}")
@@ -183,6 +249,11 @@ async def translate_dialogue_clusters_free(
                         seg["translation"] = normalize_khmer_unicode(polish_khmer_dialogue(km_text))
                     if en_text and en_text != "...":
                         seg["english_intent"] = en_text
+
+                    # Rule-based character voice & gender detection
+                    detected_gender = detect_dialogue_gender(seg.get("text", ""), seg.get("english_intent", ""))
+                    seg["gender"] = detected_gender
+                    seg["voice_type"] = detected_gender
 
             except Exception as e:
                 logger.warning(f"Chunk translate failed ({e}). Falling back for chunk...")

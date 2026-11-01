@@ -238,7 +238,7 @@ async def download_video(
     has_node = bool(node_bin and Path(node_bin).exists())
 
     ydl_opts: Dict[str, Any] = {
-        'format': 'bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/bestvideo[vcodec^=avc]+bestaudio/bestvideo*+bestaudio/best',
+        'format': 'bestvideo[height<=720][vcodec^=avc]+bestaudio[acodec^=mp4a]/bestvideo[height<=720]+bestaudio/bestvideo*+bestaudio/best',
         'merge_output_format': 'mp4',
         'outtmpl': str(dest_dir / '%(id)s.%(ext)s'),
         'writesubtitles': True,

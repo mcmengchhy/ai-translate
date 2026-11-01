@@ -23,7 +23,7 @@ STORAGE_UPLOADS.mkdir(parents=True, exist_ok=True)
 
 class VideoDubUrlRequest(BaseModel):
     url: str = Field(..., description="Bilibili, YouTube, or direct video URL")
-    voice_type: str = Field(default="male", description="'male' (Piseth) or 'female' (Sreymom)")
+    voice_type: str = Field(default="multi", description="'multi' (Auto-detect character: Piseth/Sreymom), 'male' (Piseth) or 'female' (Sreymom)")
     tone: str = Field(default="standard", description="Linguistic tone: standard, casual, formal, polite")
     audio_mode: str = Field(default="smart_cinema", description="'smart_cinema' (30% background + 40% anti-copyright) or 'constant_30' / 'replace'")
     burn_subtitles: bool = Field(default=False, description="Burn Khmer subtitles into video frames")
@@ -105,7 +105,7 @@ async def start_dubbing_from_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     subtitle_file: Optional[UploadFile] = File(None),
-    voice_type: str = Form("male"),
+    voice_type: str = Form("multi"),
     tone: str = Form("standard"),
     audio_mode: str = Form("replace"),
     burn_subtitles: bool = Form(False),
@@ -159,11 +159,12 @@ async def check_pipeline_status(job_id: str):
 
 @router.post("/preview-voice")
 async def preview_khmer_voice(req: VoicePreviewRequest):
-    out_file = DUBBED_DIR / f"preview_{req.voice_type}.mp3"
+    v_type = req.voice_type if req.voice_type in ("male", "female") else "male"
+    out_file = DUBBED_DIR / f"preview_{v_type}.mp3"
     try:
         await synthesize_khmer_clip(
             req.text, str(out_file),
-            voice_type=req.voice_type,
+            voice_type=v_type,
             rate=req.rate,
             pitch=req.pitch,
             volume=req.volume,
@@ -377,6 +378,7 @@ async def rerender_dubbed_video(job_id: str, req: JobRerenderRequest):
     )
 
     job["result"] = dub_result
+    job["segments"] = segments
     _save_job(job_id)
 
     return {

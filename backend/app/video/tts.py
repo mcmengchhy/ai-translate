@@ -223,9 +223,17 @@ async def synthesize_segments(
         seg_dur = float(seg.get("end", 0)) - float(seg.get("start", 0))
         seg_dur = seg_dur if seg_dur > 0.1 else None
 
-        # Allow per-segment voice override or global voice
-        seg_voice_type = seg.get("voice_type") or voice_type
+        # Character Voice Matching:
+        # If voice_type is "multi" or "auto", use detected character gender/voice (Sreymom for female, Piseth for male)
+        if voice_type in ("multi", "auto", "cinema_multi"):
+            seg_voice_type = seg.get("voice_type") or seg.get("gender") or "male"
+        elif seg.get("voice_type") in ("male", "female"):
+            seg_voice_type = seg["voice_type"]
+        else:
+            seg_voice_type = voice_type
+
         voice = KHMER_VOICES.get(seg_voice_type.lower(), KHMER_VOICES["male"])
+        seg["voice_type"] = seg_voice_type
 
         auto_rate, auto_pitch, auto_volume = _detect_prosody(clean, seg_dur)
 

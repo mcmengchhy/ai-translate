@@ -88,6 +88,28 @@ def generate_srt_file(segments: List[Dict[str, Any]], output_path: str) -> str:
     return output_path
 
 
+def generate_vtt_file(segments: List[Dict[str, Any]], output_path: str) -> str:
+    """Creates a standard WebVTT .vtt subtitle file from segments for HTML5 video players."""
+    def format_vtt_timestamp(seconds: float) -> str:
+        hrs = int(seconds // 3600)
+        mins = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        millis = int((seconds % 1) * 1000)
+        return f"{hrs:02d}:{mins:02d}:{secs:02d}.{millis:03d}"
+
+    lines = ["WEBVTT\n"]
+    for i, seg in enumerate(segments, start=1):
+        start_ts = format_vtt_timestamp(seg.get("start", 0))
+        end_ts = format_vtt_timestamp(seg.get("end", 0))
+        text = seg.get("translation") or seg.get("text", "")
+        lines.append(f"{i}\n{start_ts} --> {end_ts}\n{text}\n")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    return output_path
+
+
 def schedule_non_overlapping_clips(
     segments: List[Dict[str, Any]],
     min_gap: float = 0.05,
@@ -320,9 +342,12 @@ async def assemble_dubbed_video(
         batch_size=50,
     )
 
-    # 3. Generate Subtitles .srt synchronized with collision-free timestamps
+    # 3. Generate Subtitles (.srt and .vtt) synchronized with collision-free timestamps
     srt_path = DUBBED_DIR / f"{final_video_path.stem}.srt"
     generate_srt_file(segments, str(srt_path))
+
+    vtt_path = DUBBED_DIR / f"{final_video_path.stem}.vtt"
+    generate_vtt_file(segments, str(vtt_path))
 
     # 4. Final Video Assembly
     # Audio balance configuration:
@@ -425,8 +450,10 @@ async def assemble_dubbed_video(
     return {
         "dubbed_video_path": str(final_video_path),
         "srt_path": str(srt_path),
+        "vtt_path": str(vtt_path),
         "download_url": f"/static/dubbed/{final_video_path.name}",
         "srt_url": f"/static/dubbed/{srt_path.name}",
+        "vtt_url": f"/static/dubbed/{vtt_path.name}",
         "duration": video_duration,
         "segments_count": len(segments),
     }

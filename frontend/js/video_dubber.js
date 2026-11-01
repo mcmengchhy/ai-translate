@@ -401,12 +401,35 @@ function displayCompletedVideo(job) {
     studioJobId = job.id;
     studioSegments = JSON.parse(JSON.stringify(job.segments || []));
 
-    // Ensure every segment has voice_type
+    // Ensure every segment has character voice_type based on detected gender
     studioSegments.forEach(s => {
-        if (!s.voice_type) s.voice_type = "male";
+        if (!s.voice_type) {
+            s.voice_type = (s.gender === "female") ? "female" : "male";
+        }
     });
 
     videoPlayer.src = job.result.download_url;
+
+    // Attach native WebVTT track for synchronized on-screen subtitle rendering
+    const oldTracks = videoPlayer.querySelectorAll('track');
+    oldTracks.forEach(t => t.remove());
+
+    if (job.result.vtt_url) {
+        const track = document.createElement('track');
+        track.kind = 'subtitles';
+        track.label = 'Khmer (ខ្មែរ)';
+        track.srclang = 'km';
+        track.src = job.result.vtt_url;
+        track.default = true;
+        videoPlayer.appendChild(track);
+        try {
+            if (videoPlayer.textTracks && videoPlayer.textTracks[0]) {
+                videoPlayer.textTracks[0].mode = 'showing';
+            }
+        } catch (e) {
+            console.debug("textTracks mode error:", e);
+        }
+    }
     if (downloadVideoBtn) {
         downloadVideoBtn.onclick = (e) => openDownloadModal('video', e);
     }
@@ -503,6 +526,7 @@ function renderStudioCueCards() {
             <div class="cue-card-header">
                 <div class="cue-card-identity">
                     <span class="cue-index-badge">#${idx + 1}</span>
+                    ${seg.speaker ? `<span class="cue-speaker-badge" style="font-size:0.75rem; padding: 2px 6px; border-radius: 4px; background: rgba(59,130,246,0.12); color: #60a5fa; border: 1px solid rgba(59,130,246,0.25); margin-right: 4px;"><i class="ph ph-user"></i> ${escapeHtml(seg.speaker)}</span>` : ''}
                     <div class="cue-timing-controls">
                         <div class="time-nudge-wrap">
                             <button type="button" class="btn-nudge" onclick="studioNudgeTime(${idx}, 'start', -0.1)" title="-0.1s">-</button>
