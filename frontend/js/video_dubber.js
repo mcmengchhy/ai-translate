@@ -817,6 +817,8 @@ async function studioRerenderVideo() {
         audioMode = "replace";
     } else if (bgVol < 0) {
         audioMode = "smart_cinema";
+    } else if (Math.abs(bgVol - 0.30) < 0.01) {
+        audioMode = "constant_30";
     } else if (bgVol > 0 && bgVol <= 0.06) {
         audioMode = "duck_subtle";
     } else if (bgVol > 0.06) {

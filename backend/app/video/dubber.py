@@ -287,7 +287,7 @@ async def assemble_dubbed_video(
     video_path: str,
     segments: List[Dict[str, Any]],
     output_filename: Optional[str] = None,
-    audio_mode: str = "smart_cinema",  # "smart_cinema" (90% speech mute, 100% fighting + 60% anti-copyright), "replace", "ducking"
+    audio_mode: str = "smart_cinema",  # "smart_cinema" (30% background + 40% anti-copyright), "replace", "ducking"
     bg_volume: Optional[float] = None,
     burn_subtitles: bool = False,
 ) -> Dict[str, Any]:
@@ -330,21 +330,22 @@ async def assemble_dubbed_video(
 
     # Important audio mixing settings:
     # 1. Default to Smart Cinema Ducking ("smart_cinema" / "smart_sidechain" / "smart"):
-    #    - When speaking: original audio is compressed by 90% (only 10% volume remains, -20dB).
-    #    - When fighting / silent: original audio stays 100% full volume with punchy SFX and music.
-    #    - 60% Anti-Copyright Audio Protection: stereo chorus + multiband EQ alters acoustic fingerprint
+    #    - Background audio is kept at 30% volume (volume=0.30) with 40% Anti-Copyright protection.
+    #    - When speaking: background audio is ducked by 90% (only ~3% faint whisper) so Khmer voiceover is 100% clean.
+    #    - When fighting / silent: original audio stays at 30% full background energy with punchy SFX and music.
+    #    - 40% Anti-Copyright Audio Protection: stereo chorus + multiband EQ alters acoustic fingerprint
     #      so YouTube/TikTok Content ID does not trigger copyright strikes on the background soundtrack.
     # 2. "replace" / "mute": 100% Pure Studio Voiceover (zero original audio).
-    # 3. "ducking": Constant 10% background audio.
+    # 3. "constant_30" / "ducking": Constant 30% background audio with 40% Anti-Copyright effect.
 
-    anti_copyright_filter = "aformat=channel_layouts=stereo,equalizer=f=1000:t=q:w=1:g=-3,equalizer=f=2500:t=q:w=1:g=-3,chorus=0.7:0.6:45:0.4:0.25:1.5"
+    anti_copyright_filter = "aformat=channel_layouts=stereo,volume=0.30,equalizer=f=1000:t=q:w=1:g=-2.5,equalizer=f=2500:t=q:w=1:g=-2.5,chorus=0.8:0.4:40:0.4:0.25:1.5"
 
     if bg_volume is not None:
         if bg_volume <= 0.001 and bg_volume >= 0:
             # 100% Pure Voiceover: zero original video noise/speech
             audio_filter = "[1:a]volume=1.0[aout]"
         elif bg_volume < 0:
-            # Smart Cinema Ducking: 90% speech mute, 100% fighting sound + 60% Anti-Copyright
+            # Smart Cinema Ducking: 30% background + 40% Anti-Copyright (ducked during speech)
             audio_filter = (
                 f"[0:a]{anti_copyright_filter}[bg_proc];"
                 "[bg_proc][1:a]sidechaincompress=threshold=0.01:ratio=20:attack=15:release=250[bg_ducked];"
@@ -352,18 +353,26 @@ async def assemble_dubbed_video(
                 "[bg_ducked][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
             )
         else:
+            # Custom background volume with 40% anti-copyright protection
             audio_filter = (
-                f"[0:a]volume={bg_volume:.3f}[bg];"
+                f"[0:a]volume={bg_volume:.3f},aformat=channel_layouts=stereo,equalizer=f=1000:t=q:w=1:g=-2.5,equalizer=f=2500:t=q:w=1:g=-2.5,chorus=0.8:0.4:40:0.4:0.25:1.5[bg];"
                 f"[1:a]volume=1.0[khmer];"
                 f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
             )
     elif audio_mode in ("smart_cinema", "smart_sidechain", "smart", "cinema"):
-        # Smart Cinema Ducking (DEFAULT): 90% speech mute, 100% fighting sound + 60% Anti-Copyright
+        # Smart Cinema Ducking (DEFAULT): 30% original background with 40% Anti-Copyright effect
         audio_filter = (
             f"[0:a]{anti_copyright_filter}[bg_proc];"
             "[bg_proc][1:a]sidechaincompress=threshold=0.01:ratio=20:attack=15:release=250[bg_ducked];"
             "[1:a]volume=1.0[khmer];"
             "[bg_ducked][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
+        )
+    elif audio_mode in ("constant_30", "ducking"):
+        # Constant 30% original background + 40% Anti-Copyright effect
+        audio_filter = (
+            f"[0:a]{anti_copyright_filter}[bg];"
+            f"[1:a]volume=1.0[khmer];"
+            f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
     elif audio_mode in ("mute", "replace"):
         # 100% Pure Studio Voiceover
@@ -376,10 +385,10 @@ async def assemble_dubbed_video(
             "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
     else:
-        # Standard Ducking: lowers original audio to 10%
+        # Default fallback: 30% background + 40% Anti-Copyright effect
         audio_filter = (
-            "[0:a]volume=0.10[bg];"
-            "[1:a]volume=1.0[khmer];"
+            f"[0:a]{anti_copyright_filter}[bg];"
+            f"[1:a]volume=1.0[khmer];"
             "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
 
