@@ -101,11 +101,11 @@ async def download_bilibili_direct(
         # 3. Stream direct to MP4 using FFmpeg (fast, losslessly copies audio/video with valid MP4 container)
         final_video_path = output_dir / f"{bvid}.mp4"
 
-        # If full video already downloaded, reuse it immediately
+        # If full video already downloaded and complete, reuse it immediately
         if (not max_clip_seconds or max_clip_seconds == 0) and final_video_path.exists():
             from .dubber import get_media_duration
             existing_dur = get_media_duration(str(final_video_path))
-            if existing_dur >= duration - 10:
+            if existing_dur >= duration * 0.90:
                 logger.info(f"Full video already downloaded on disk ({existing_dur:.1f}s). Skipping re-download.")
                 return {
                     "id": bvid,
@@ -118,9 +118,20 @@ async def download_bilibili_direct(
                     "url": f"https://www.bilibili.com/video/{bvid}",
                     "platform": "Bilibili",
                 }
+            else:
+                logger.warning(f"Existing file on disk is incomplete ({existing_dur:.1f}s / {duration}s). Removing and re-downloading...")
+                final_video_path.unlink(missing_ok=True)
 
         headers_str = "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nReferer: https://www.bilibili.com/\r\n"
-        cmd = ["ffmpeg", "-y", "-headers", headers_str, "-i", mp4_stream_url]
+        cmd = [
+            "ffmpeg", "-y",
+            "-reconnect", "1",
+            "-reconnect_at_eof", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",
+            "-headers", headers_str,
+            "-i", mp4_stream_url
+        ]
         if max_clip_seconds and max_clip_seconds > 0 and max_clip_seconds < duration:
             clip_seconds = max_clip_seconds
             cmd.extend(["-t", str(clip_seconds)])
@@ -137,10 +148,22 @@ async def download_bilibili_direct(
             lambda: subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         )
 
+        from .dubber import get_media_duration
+        actual_dur = get_media_duration(str(final_video_path))
+        target_dur = min(max_clip_seconds, duration) if (max_clip_seconds and max_clip_seconds > 0) else duration
+
+        if actual_dur < target_dur * 0.90:
+            logger.warning(
+                f"Bilibili direct stream was truncated by CDN ({actual_dur:.1f}s / expected {target_dur}s). "
+                f"Removing incomplete file and falling back to yt-dlp..."
+            )
+            final_video_path.unlink(missing_ok=True)
+            raise RuntimeError(f"Bilibili stream truncated by CDN: received {actual_dur:.1f}s of {target_dur}s")
+
         return {
             "id": bvid,
             "title": title,
-            "duration": clip_seconds,
+            "duration": actual_dur,
             "full_duration": duration,
             "thumbnail": pic,
             "video_path": str(final_video_path),

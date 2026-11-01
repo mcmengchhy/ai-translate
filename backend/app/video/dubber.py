@@ -92,7 +92,7 @@ def schedule_non_overlapping_clips(
     segments: List[Dict[str, Any]],
     min_gap: float = 0.05,
     temp_dir: Optional[Path] = None,
-    max_speed: float = 1.35,
+    max_speed: float = 1.15,
 ) -> List[Dict[str, Any]]:
     """
     Cinema Lip-Sync Sequencer:
@@ -307,8 +307,8 @@ async def assemble_dubbed_video(
     temp_dir = DUBBED_DIR / f"temp_{video.stem}"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Schedule clips with Lip-Sync sequencer (mouth-aligned, time-fitted, zero cumulative drift)
-    valid_clips = schedule_non_overlapping_clips(segments, temp_dir=temp_dir, max_speed=1.45)
+    # 1. Schedule clips with Lip-Sync sequencer (mouth-aligned, gentle tempo limit max 1.15x for silky smooth natural speech)
+    valid_clips = schedule_non_overlapping_clips(segments, temp_dir=temp_dir, max_speed=1.15)
 
     # 2. Build master voice track with batching support for 5h - 10h+ videos
     master_voice_path = temp_dir / "master_khmer_voice.wav"
@@ -329,65 +329,65 @@ async def assemble_dubbed_video(
     final_cmd = ["ffmpeg", "-y", "-i", str(video), "-i", str(master_voice_path)]
 
     # Important audio mixing settings:
-    # 1. Default to Smart Cinema Ducking ("smart_cinema" / "smart_sidechain" / "smart"):
-    #    - Background audio is kept at 30% volume (volume=0.30) with 40% Anti-Copyright protection.
-    #    - When speaking: background audio is ducked by 90% (only ~3% faint whisper) so Khmer voiceover is 100% clean.
-    #    - When fighting / silent: original audio stays at 30% full background energy with punchy SFX and music.
-    #    - 40% Anti-Copyright Audio Protection: stereo chorus + multiband EQ alters acoustic fingerprint
-    #      so YouTube/TikTok Content ID does not trigger copyright strikes on the background soundtrack.
-    # 2. "replace" / "mute": 100% Pure Studio Voiceover (zero original audio).
-    # 3. "constant_30" / "ducking": Constant 30% background audio with 40% Anti-Copyright effect.
+    # 1. Default to Silky Smooth Cinema Mix ("smart_cinema" / "smart_sidechain" / "smart"):
+    #    - Natural voice tempo (clamped at max 1.15x) for completely natural, smooth conversational dialogue.
+    #    - Balanced background audio (~20-25% volume) with smooth, gentle ducking (release=650ms, ratio=3.5)
+    #      eliminating all choppy pumping between words.
+    #    - Clean Anti-Copyright Protection (multiband EQ + stereo phase shaping): alters Content ID fingerprint
+    #      without any wobbly chorus, pitch fluctuation, or underwater distortion.
+    #    - Khmer studio voiceover stays 100% crystal-clear, loud, and prominent.
+    # 2. "replace" / "mute": 100% Pure Studio Voiceover (zero original audio - bit-exact identical to preview).
+    # 3. "constant_30": Constant 30% background without ducking.
 
-    anti_copyright_filter = "aformat=channel_layouts=stereo,volume=0.30,equalizer=f=1000:t=q:w=1:g=-2.5,equalizer=f=2500:t=q:w=1:g=-2.5,chorus=0.8:0.4:40:0.4:0.25:1.5"
+    clean_anti_copyright = "aformat=channel_layouts=stereo,equalizer=f=1000:t=q:w=1.2:g=-2.5,equalizer=f=2800:t=q:w=1.2:g=-2.5,stereotools=mlev=0.85:slev=1.15"
 
     if bg_volume is not None:
         if bg_volume <= 0.001 and bg_volume >= 0:
             # 100% Pure Voiceover: zero original video noise/speech
             audio_filter = "[1:a]volume=1.0[aout]"
         elif bg_volume < 0:
-            # Smart Cinema Ducking: 30% background + 40% Anti-Copyright (ducked during speech)
+            # Smooth Cinema Ducking: 25% background with gentle, smooth ducking (no choppy pumping)
             audio_filter = (
-                f"[0:a]{anti_copyright_filter}[bg_proc];"
-                "[bg_proc][1:a]sidechaincompress=threshold=0.01:ratio=20:attack=15:release=250[bg_ducked];"
+                f"[0:a]volume=0.25,{clean_anti_copyright}[bg_proc];"
+                "[bg_proc][1:a]sidechaincompress=threshold=0.015:ratio=3.5:attack=30:release=650:knee=2.5[bg_ducked];"
                 "[1:a]volume=1.0[khmer];"
                 "[bg_ducked][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
             )
         else:
-            # Custom background volume with 40% anti-copyright protection
+            # Custom background volume
             audio_filter = (
-                f"[0:a]volume={bg_volume:.3f},aformat=channel_layouts=stereo,equalizer=f=1000:t=q:w=1:g=-2.5,equalizer=f=2500:t=q:w=1:g=-2.5,chorus=0.8:0.4:40:0.4:0.25:1.5[bg];"
+                f"[0:a]volume={bg_volume:.3f},{clean_anti_copyright}[bg];"
                 f"[1:a]volume=1.0[khmer];"
                 f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
             )
     elif audio_mode in ("smart_cinema", "smart_sidechain", "smart", "cinema"):
-        # Smart Cinema Ducking (DEFAULT): 30% original background with 40% Anti-Copyright effect
+        # Smooth Cinema Ducking (DEFAULT): 25% background with gentle, smooth ducking (no choppy pumping)
         audio_filter = (
-            f"[0:a]{anti_copyright_filter}[bg_proc];"
-            "[bg_proc][1:a]sidechaincompress=threshold=0.01:ratio=20:attack=15:release=250[bg_ducked];"
+            f"[0:a]volume=0.25,{clean_anti_copyright}[bg_proc];"
+            "[bg_proc][1:a]sidechaincompress=threshold=0.015:ratio=3.5:attack=30:release=650:knee=2.5[bg_ducked];"
             "[1:a]volume=1.0[khmer];"
             "[bg_ducked][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
     elif audio_mode in ("constant_30", "ducking"):
-        # Constant 30% original background + 40% Anti-Copyright effect
         audio_filter = (
-            f"[0:a]{anti_copyright_filter}[bg];"
+            f"[0:a]volume=0.25,{clean_anti_copyright}[bg];"
             f"[1:a]volume=1.0[khmer];"
             f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
     elif audio_mode in ("mute", "replace"):
-        # 100% Pure Studio Voiceover
+        # 100% Pure Studio Voiceover: only Khmer dubbing audible, 100% bit-exact identical to preview
         audio_filter = "[1:a]volume=1.0[aout]"
     elif audio_mode == "duck_subtle":
-        # 5% subtle background audio
+        # 8% subtle background audio
         audio_filter = (
-            "[0:a]volume=0.05[bg];"
+            f"[0:a]volume=0.08,{clean_anti_copyright}[bg];"
             "[1:a]volume=1.0[khmer];"
             "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
     else:
-        # Default fallback: 30% background + 40% Anti-Copyright effect
+        # Default fallback
         audio_filter = (
-            f"[0:a]{anti_copyright_filter}[bg];"
+            f"[0:a]volume=0.25,{clean_anti_copyright}[bg];"
             f"[1:a]volume=1.0[khmer];"
             "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
