@@ -114,7 +114,7 @@ def schedule_non_overlapping_clips(
     segments: List[Dict[str, Any]],
     min_gap: float = 0.05,
     temp_dir: Optional[Path] = None,
-    max_speed: float = 1.15,
+    max_speed: float = 1.35,
 ) -> List[Dict[str, Any]]:
     """
     Cinema Lip-Sync Sequencer:
@@ -309,7 +309,7 @@ async def assemble_dubbed_video(
     video_path: str,
     segments: List[Dict[str, Any]],
     output_filename: Optional[str] = None,
-    audio_mode: str = "smart_cinema",  # "smart_cinema" (30% background + 40% anti-copyright), "replace", "ducking"
+    audio_mode: str = "replace",  # "replace" (100% pure voiceover matching preview), "ducking", "mute", "smart_cinema"
     bg_volume: Optional[float] = None,
     burn_subtitles: bool = False,
 ) -> Dict[str, Any]:
@@ -329,8 +329,8 @@ async def assemble_dubbed_video(
     temp_dir = DUBBED_DIR / f"temp_{video.stem}"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Schedule clips with Lip-Sync sequencer (mouth-aligned, gentle tempo limit max 1.15x for silky smooth natural speech)
-    valid_clips = schedule_non_overlapping_clips(segments, temp_dir=temp_dir, max_speed=1.15)
+    # 1. Schedule clips with Lip-Sync sequencer (mouth-aligned, time-fitted, zero cumulative drift)
+    valid_clips = schedule_non_overlapping_clips(segments, temp_dir=temp_dir, max_speed=1.40)
 
     # 2. Build master voice track with batching support for 5h - 10h+ videos
     master_voice_path = temp_dir / "master_khmer_voice.wav"

@@ -23,9 +23,9 @@ STORAGE_UPLOADS.mkdir(parents=True, exist_ok=True)
 
 class VideoDubUrlRequest(BaseModel):
     url: str = Field(..., description="Bilibili, YouTube, or direct video URL")
-    voice_type: str = Field(default="multi", description="'multi' (Auto-detect character: Piseth/Sreymom), 'male' (Piseth) or 'female' (Sreymom)")
+    voice_type: str = Field(default="male", description="'male' (Piseth), 'female' (Sreymom), or 'multi'")
     tone: str = Field(default="standard", description="Linguistic tone: standard, casual, formal, polite")
-    audio_mode: str = Field(default="smart_cinema", description="'smart_cinema' (30% background + 40% anti-copyright) or 'constant_30' / 'replace'")
+    audio_mode: str = Field(default="replace", description="'replace' (100% pure voiceover, identical to preview) or 'ducking' / 'smart_cinema'")
     burn_subtitles: bool = Field(default=False, description="Burn Khmer subtitles into video frames")
     max_duration: Optional[int] = Field(default=0, description="Duration in seconds to dub (e.g. 90 for fast test, 300 for 5m, 0 for full video)")
     api_key: Optional[str] = Field(default=None, description="Optional Gemini API key")
@@ -65,8 +65,8 @@ class PolishDialogueRequest(BaseModel):
 
 class JobRerenderRequest(BaseModel):
     segments: Optional[List[Dict[str, Any]]] = None
-    audio_mode: str = "smart_cinema"  # "smart_cinema" (30% background + 40% anti-copyright), "constant_30", "replace", "mute", "duck_subtle", "ducking"
-    bg_volume: Optional[float] = -1.0
+    audio_mode: str = "replace"  # "replace" (100% pure voiceover), "mute", "duck_subtle", "ducking", "smart_cinema"
+    bg_volume: Optional[float] = 0.0
     burn_subtitles: bool = False
     voice_rate: str = "auto"
     voice_pitch: str = "auto"
@@ -105,7 +105,7 @@ async def start_dubbing_from_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     subtitle_file: Optional[UploadFile] = File(None),
-    voice_type: str = Form("multi"),
+    voice_type: str = Form("male"),
     tone: str = Form("standard"),
     audio_mode: str = Form("replace"),
     burn_subtitles: bool = Form(False),

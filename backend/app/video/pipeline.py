@@ -75,10 +75,10 @@ async def run_video_dubbing_pipeline(
     job_id: str,
     video_source: str,  # URL or local file path
     is_url: bool = True,
-    voice_type: str = "multi",
+    voice_type: str = "male",
     tone: str = "standard",
     engine_name: str = "auto",
-    audio_mode: str = "smart_cinema",
+    audio_mode: str = "replace",
     burn_subtitles: bool = False,
     max_duration: Optional[int] = 90,
     api_key: Optional[str] = None,

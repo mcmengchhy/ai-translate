@@ -87,9 +87,9 @@
                             <label><i class="ph ph-user-sound"></i> Khmer Voice (សំឡេងខ្មែរ)</label>
                             <div class="voice-picker-wrap">
                                 <select id="video-voice-select" class="styled-select">
-                                    <option value="multi" selected>🎭 Auto Multi-Voice (Characters Match 👨 Male / 👩 Female)</option>
-                                    <option value="male">👨 Piseth (All Male Neural) - Friendly & Clear</option>
-                                    <option value="female">👩 Sreymom (All Female Neural) - Warm & Expressive</option>
+                                    <option value="male" selected>👨 Piseth (Male Neural) - Friendly & Clear</option>
+                                    <option value="female">👩 Sreymom (Female Neural) - Warm & Expressive</option>
+                                    <option value="multi">🎭 Auto Multi-Voice (Characters Match 👨 Male / 👩 Female)</option>
                                 </select>
                                 <button type="button" class="btn-ghost btn-sm" id="preview-voice-btn" title="Test sample speech">
                                     <i class="ph ph-speaker-high"></i> Test
@@ -103,8 +103,8 @@
                         <div class="config-col">
                             <label><i class="ph ph-sliders"></i> Audio Mixing Mode</label>
                             <select id="video-audio-mode" class="styled-select">
-                                <option value="smart_cinema" selected>🎚️ Smooth Cinema Blend (Gentle Background, Silky Smooth Dialogue)</option>
-                                <option value="replace">🔇 100% Pure Studio Voiceover (Zero noise / foreign voice - Identical to Preview)</option>
+                                <option value="replace" selected>🔇 100% Pure Studio Voiceover (Zero noise / foreign voice - Identical to Preview)</option>
+                                <option value="smart_cinema">🎚️ Smooth Cinema Blend (Gentle Background, Silky Smooth Dialogue)</option>
                                 <option value="constant_30">🔉 Constant Background (25% Volume + Anti-Copyright)</option>
                             </select>
                         </div>
@@ -352,8 +352,8 @@
                             <div class="studio-control-group">
                                 <label for="studio-bg-volume"><i class="ph ph-speaker-high"></i> Background Sound:</label>
                                 <select id="studio-bg-volume" class="styled-select select-xs" onchange="markStudioDirty()">
-                                    <option value="-1" selected>🎚️ Smooth Cinema Blend (Gentle Background, Silky Smooth Voice)</option>
-                                    <option value="0.0">🔇 100% Pure Studio Voice (Zero Foreign Sound - Matches Preview)</option>
+                                    <option value="0.0" selected>🔇 100% Pure Studio Voice (Zero Foreign Sound - Matches Preview)</option>
+                                    <option value="-1">🎚️ Smooth Cinema Blend (Gentle Background, Silky Smooth Voice)</option>
                                     <option value="0.25">🔉 Balanced Background (25%)</option>
                                     <option value="0.10">🔉 Subtle Ambience (10%)</option>
                                     <option value="0.40">📢 Loud Background (40%)</option>

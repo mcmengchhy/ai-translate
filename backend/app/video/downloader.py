@@ -1,6 +1,7 @@
 """Universal video downloader supporting YouTube, Bilibili, TikTok, Facebook, Twitter/X, Douyin, and web URLs."""
 
 import re
+import time
 import shutil
 import logging
 import asyncio
@@ -250,6 +251,8 @@ async def download_video(
         'quiet': False,
         'http_chunk_size': 10485760,  # 10MB chunking prevents CDN socket dropouts on large/multi-hour streams
         'concurrent_fragment_downloads': 4,
+        'continuedl': True,  # Resume partially downloaded files (.part) seamlessly
+        'nopart': False,
         'retries': 30,
         'fragment_retries': 30,
         'buffersize': 1048576,
@@ -264,24 +267,36 @@ async def download_video(
         ydl_opts['force_keyframes_at_cuts'] = True
 
     def _sync_download():
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                extracted = ydl.extract_info(url, download=True)
-                if not extracted:
-                    raise RuntimeError(f"Could not extract video metadata from {platform} ({url})")
-                return extracted
-        except Exception as err:
-            # If download_ranges caused an issue on certain platforms, retry without ranges and trim with ffmpeg
-            if 'download_ranges' in ydl_opts:
-                logger.warning(f"Range download failed ({err}). Retrying full download with ffmpeg trimming...")
-                ydl_opts.pop('download_ranges', None)
-                ydl_opts.pop('force_keyframes_at_cuts', None)
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl_retry:
-                    extracted_retry = ydl_retry.extract_info(url, download=True)
-                    if not extracted_retry:
-                        raise RuntimeError(f"Retry could not extract video metadata from {platform} ({url})")
-                    return extracted_retry
-            raise
+        max_attempts = 4
+        for attempt in range(max_attempts):
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    extracted = ydl.extract_info(url, download=True)
+                    if not extracted:
+                        raise RuntimeError(f"Could not extract video metadata from {platform} ({url})")
+                    return extracted
+            except Exception as err:
+                err_str = str(err)
+                is_expired_or_403 = any(kw in err_str for kw in ["403", "Forbidden", "expired", "HTTP Error 403"])
+                if attempt < max_attempts - 1 and is_expired_or_403:
+                    logger.warning(
+                        f"Stream token expired or HTTP 403 on attempt {attempt + 1}/{max_attempts} ({err}). "
+                        f"Re-extracting fresh signed stream URL to resume partial download..."
+                    )
+                    time.sleep(2)
+                    continue
+
+                # If download_ranges caused an issue on certain platforms, retry without ranges and trim with ffmpeg
+                if 'download_ranges' in ydl_opts:
+                    logger.warning(f"Range download failed ({err}). Retrying full download with ffmpeg trimming...")
+                    ydl_opts.pop('download_ranges', None)
+                    ydl_opts.pop('force_keyframes_at_cuts', None)
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl_retry:
+                        extracted_retry = ydl_retry.extract_info(url, download=True)
+                        if not extracted_retry:
+                            raise RuntimeError(f"Retry could not extract video metadata from {platform} ({url})")
+                        return extracted_retry
+                raise
 
     loop = asyncio.get_event_loop()
     try:
