@@ -309,7 +309,7 @@ async def assemble_dubbed_video(
     video_path: str,
     segments: List[Dict[str, Any]],
     output_filename: Optional[str] = None,
-    audio_mode: str = "cinema_4",  # "cinema_4" (4% background + anti-copyright), "replace", "smart_cinema"
+    audio_mode: str = "cinema_3",  # "cinema_3" (3% background + anti-copyright), "replace", "smart_cinema"
     bg_volume: Optional[float] = None,
     burn_subtitles: bool = False,
 ) -> Dict[str, Any]:
@@ -385,11 +385,11 @@ async def assemble_dubbed_video(
                 f"[1:a]volume=1.0[khmer];"
                 f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
             )
-    elif audio_mode in ("cinema_4", "cinema_10", "default"):
-        # 4% Original Background + Anti-Copyright Effect (DEFAULT):
-        # Keeps original fighting sound / music at 4% volume, while altering Content ID fingerprint
+    elif audio_mode in ("cinema_3", "cinema_4", "cinema_10", "default"):
+        # 3% Original Background + Anti-Copyright Effect (DEFAULT):
+        # Keeps original fighting sound / music at 3% volume, while altering Content ID fingerprint
         # and letting the 100% Khmer voice stay crisp, prominent, and uninterrupted.
-        eff_vol = bg_volume if (bg_volume is not None and bg_volume > 0) else 0.04
+        eff_vol = bg_volume if (bg_volume is not None and bg_volume > 0) else 0.03
         audio_filter = (
             f"[0:a]volume={eff_vol:.3f},{clean_anti_copyright}[bg];"
             f"[1:a]volume=1.0[khmer];"

@@ -73,7 +73,7 @@ async def translate_dialogue_batch_gemini(
     """
     import os
     effective_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
-    effective_model = model or os.getenv("DEFAULT_GEMINI_MODEL", "gemini-flash-lite-latest")
+    preferred_model = model or os.getenv("DEFAULT_GEMINI_MODEL", "gemini-3-flash-preview")
 
     if not effective_key:
         raise ValueError("Gemini API key is required for AI Dialogue Dubbing.")
@@ -85,27 +85,43 @@ async def translate_dialogue_batch_gemini(
     if not dialogue_payload:
         return segments
 
-    system_prompt = f"""You are a master cinematic translation & voice dubbing director specializing in {source_lang}-to-Khmer film localization (អ្នកដឹកនាំការបញ្ចូលសំឡេងភាពយន្តខ្មែរ).
+    system_prompt = f"""You are an elite cinematic dubbing director specializing in {source_lang}-to-Khmer film localization (អ្នកដឹកនាំការបញ្ចូលសំឡេងភាពយន្តខ្មែរ).
+
+MISSION:
+Transform dramatic dialogue into 100% authentic, emotionally resonant spoken Khmer film dubbing (ភាសានិយាយក្នុងភាពយន្ត កម្រិតស្ទូឌីយោ).
 
 CRITICAL 2-STEP TRANSLATION & REASONING PIVOT:
 To guarantee 100% logical clarity, accurate idioms, and natural dialogue:
 STEP 1 ({source_lang} -> English Meaning & Reasoning):
 - Accurately interpret the contextual meaning, intent, sarcasm, emotion, and character relationships into natural English.
-- Resolve historical/wuxia/cultural terms correctly (e.g. '两' = taels of silver [តម្លឹង], '客官' = guest/customer, '掌柜' = innkeeper/boss, '元宝' = silver/gold ingot, '穿越' = transmigrate/time-travel to another world, '无敌' = invincible/unbeatable).
+- Resolve historical/wuxia/costume drama terms accurately:
+  * '爷爷' = Grandpa (លោកតា)
+  * '公公' = Father-in-law (លោកពុក / ពុកក្មេក) or Eunuch in imperial palace
+  * '婆婆' = Mother-in-law (លោកម៉ែ / ម៉ែក្មេក)
+  * '粮食' / '救命粮' = Life-saving food grain / emergency rations (ស្បៀងសង្គ្រោះជីវិត / ស្បៀងអាហារ)
+  * '活路' = Way to survive (ផ្លូវរស់)
+  * '两' / '白银' = Taels of silver (តម្លឹងប្រាក់)
+  * '掌柜' = Boss / Innkeeper (ថៅកែ)
+  * '客官' = Respected guest / customer (លោកម្ចាស់ / ភ្ញៀវ)
+  * '穿越' = Transmigrated / time-traveled to ancient times (ឆ្លងភព)
+  * '无敌' = Invincible (គ្មានគូប្រៀប / ខ្លាំងអស្ចារ្យ)
 - NEVER confuse homophones or translate idioms literally (e.g. '老妈我都多大了' -> 'Mom, I am an adult now!', '是你给我50两' -> 'You owe ME 50 taels of silver!').
 
 STEP 2 (English -> Authentic Conversational Khmer Film Dubbing):
-- Translate the refined English intent into 100% natural, lively, and emotional Khmer dialogue (ភាសានិយាយក្នុងភាពយន្តខ្មែរ).
-- Use natural Cambodian pronouns (ខ្ញុំ, បង, អូន, ឯង, ម៉ាក់, ប៉ា, ថៅកែ, លោក) based on character hierarchy.
-- Use natural spoken particles (ណា, ហ្នឹង, ទេ, ម៉ង, តើ, ម្ល៉េះ).
-- NEVER output Thai (e.g., นี่คือ, ตำลึง), Vietnamese, or robotic transliterations.
+- Translate the refined English intent into 100% natural, lively, and emotional spoken Khmer dialogue (ភាសានិយាយភាពយន្ត).
+- Use natural Cambodian family/social pronouns (ខ្ញុំ, បង, អូន, ឯង, ម៉ាក់, ប៉ា, លោកពុក, លោកតា, ថៅកែ, លោកម្ចាស់) based on character hierarchy.
+- Use natural conversational particles to convey urgency and emotion (ណា, ហ្នឹង, ទេ, ម៉ង, តើ, ម្ល៉េះ, ទៅ, អើយ).
+- TIMING & RHYTHMIC FITTING: Keep lines concise, punchy, and natural so voice actors can deliver them smoothly without rushing.
+
+STRICT NEGATIVE SCRIPT CONSTRAINT:
+- NEVER use Thai characters (e.g., ร, ้, ่, อ, ง, ื, ฯ) or Vietnamese text. Output MUST BE 100% PURE KHMER SCRIPT (អក្សរខ្មែរ).
 - The "translation" field must contain ONLY pure spoken Khmer dialogue for voice actor dubbing. NEVER include original Chinese characters, pinyin, or explanatory parenthetical glosses like '(ផ្ទះសំណាក់)' or '(还有)'.
 
 STEP 3 (Character Voice & Gender Matching):
 - Accurately identify the character speaker role and gender for each line based on the scene dialogue, vocatives, and context:
   * "gender": "female" for any female speaker (e.g., mother, daughter, sister, wife, maiden, girl, empress, concubine, grandma).
   * "gender": "male" for any male speaker (e.g., father, son, brother, husband, boy, man, emperor, master, scholar, grandpa).
-- "speaker": Short character role name (e.g. "Daughter", "Father", "Mother", "System", "Narrator").
+- "speaker": Short character role name (e.g. "Grandson", "Daughter-in-law", "Son", "Father", "Mother", "Narrator").
 
 OUTPUT FORMAT: Return ONLY a valid JSON array:
 [
@@ -121,52 +137,66 @@ OUTPUT FORMAT: Return ONLY a valid JSON array:
 
     user_prompt = f"Dialogue scene to translate with 2-step English reasoning:\n{json.dumps(dialogue_payload, ensure_ascii=False, indent=2)}"
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{effective_model}:generateContent?key={effective_key}"
-    payload = {
-        "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-        "generationConfig": {
-            "temperature": 0.2,
-            "responseMimeType": "application/json",
-        },
-    }
+    candidate_models = [preferred_model]
+    for fallback in ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest"]:
+        if fallback not in candidate_models:
+            candidate_models.append(fallback)
 
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        resp = await client.post(url, json=payload)
-        if resp.status_code == 200:
-            data = resp.json()
-            raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-            parsed = json.loads(raw_text)
-            trans_map = {}
-            eng_map = {}
-            gender_map = {}
-            speaker_map = {}
-            for item in parsed:
-                if "id" in item:
-                    trans_map[item["id"]] = item.get("translation", "")
-                    eng_map[item["id"]] = item.get("english_intent", "")
-                    g_val = str(item.get("gender", "")).lower().strip()
-                    gender_map[item["id"]] = "female" if g_val == "female" else ("male" if g_val == "male" else None)
-                    speaker_map[item["id"]] = item.get("speaker", "")
+    last_error = None
+    for cur_model in candidate_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{cur_model}:generateContent?key={effective_key}"
+        payload = {
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+            "generationConfig": {
+                "temperature": 0.2,
+                "responseMimeType": "application/json",
+            },
+        }
 
-            for seg in segments:
-                if seg["id"] in trans_map:
-                    seg["translation"] = normalize_khmer_unicode(polish_khmer_dialogue(trans_map[seg["id"]]))
-                if seg["id"] in eng_map and eng_map[seg["id"]]:
-                    seg["english_intent"] = eng_map[seg["id"]]
-                
-                # Assign character voice type and gender
-                detected_gender = gender_map.get(seg["id"])
-                if not detected_gender:
-                    detected_gender = detect_dialogue_gender(seg.get("text", ""), seg.get("english_intent", ""))
-                seg["gender"] = detected_gender
-                seg["voice_type"] = detected_gender
+        try:
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                resp = await client.post(url, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    parsed = json.loads(raw_text)
+                    trans_map = {}
+                    eng_map = {}
+                    gender_map = {}
+                    speaker_map = {}
+                    for item in parsed:
+                        if "id" in item:
+                            trans_map[item["id"]] = item.get("translation", "")
+                            eng_map[item["id"]] = item.get("english_intent", "")
+                            g_val = str(item.get("gender", "")).lower().strip()
+                            gender_map[item["id"]] = "female" if g_val == "female" else ("male" if g_val == "male" else None)
+                            speaker_map[item["id"]] = item.get("speaker", "")
 
-                if seg["id"] in speaker_map and speaker_map[seg["id"]]:
-                    seg["speaker"] = speaker_map[seg["id"]]
-            return segments
-        else:
-            raise RuntimeError(f"Gemini API returned {resp.status_code}: {resp.text}")
+                    for seg in segments:
+                        if seg["id"] in trans_map:
+                            seg["translation"] = normalize_khmer_unicode(polish_khmer_dialogue(trans_map[seg["id"]]))
+                        if seg["id"] in eng_map and eng_map[seg["id"]]:
+                            seg["english_intent"] = eng_map[seg["id"]]
+                        
+                        # Assign character voice type and gender
+                        detected_gender = gender_map.get(seg["id"])
+                        if not detected_gender:
+                            detected_gender = detect_dialogue_gender(seg.get("text", ""), seg.get("english_intent", ""))
+                        seg["gender"] = detected_gender
+                        seg["voice_type"] = detected_gender
+
+                        if seg["id"] in speaker_map and speaker_map[seg["id"]]:
+                            seg["speaker"] = speaker_map[seg["id"]]
+                    return segments
+                else:
+                    last_error = f"Gemini {cur_model} returned {resp.status_code}: {resp.text}"
+                    logger.warning(f"Model {cur_model} failed ({resp.status_code}), attempting fallback...")
+        except Exception as e:
+            last_error = f"Gemini {cur_model} error: {e}"
+            logger.warning(f"Model {cur_model} raised exception: {e}, attempting fallback...")
+
+    raise RuntimeError(f"All Gemini models failed: {last_error}")
 
 
 async def translate_dialogue_clusters_free(

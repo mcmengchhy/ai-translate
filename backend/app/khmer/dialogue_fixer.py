@@ -37,6 +37,8 @@ def polish_khmer_dialogue(text: str) -> str:
         return ""
     
     cleaned = text.strip()
+    # Strip speaker prefixes like "Grandson: " or "Speaker 1: " or "តួអង្គ៖ "
+    cleaned = re.sub(r"^(?:[A-Za-z\s]+|តួអង្គ\s*\d*|អ្នកនិយាយ\s*\d*)\s*[:：]\s*", "", cleaned)
     # Strip any accidental Thai characters (range \u0E00-\u0E7F)
     cleaned = re.sub(r"[\u0e00-\u0e7f]+", "", cleaned)
     # Strip parenthetical CJK annotations like (还有)

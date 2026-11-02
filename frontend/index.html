@@ -13,7 +13,7 @@
     
     <!-- Phosphor Icons (Lightweight SVG Icons) -->
     <script src="https://unpkg.com/@phosphor-icons/web"></script>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20261102d">
+    <link rel="stylesheet" href="/static/css/styles.css?v=20261102e">
 </head>
 <body>
     <div class="app-background">
@@ -107,7 +107,7 @@
                                 <label><i class="ph ph-sliders"></i> Audio Mixing Mode</label>
                             </div>
                             <select id="video-audio-mode" class="styled-select">
-                                <option value="cinema_4" selected>🔉 4% Background + Anti-Copyright Effect (Default)</option>
+                                <option value="cinema_3" selected>🔉 3% Background + Anti-Copyright Effect (Default)</option>
                                 <option value="replace">🔇 100% Pure Studio Voiceover (Zero noise / foreign sound)</option>
                                 <option value="smart_cinema">🎚️ Smooth Cinema Blend (Gentle Background, Ducking)</option>
                                 <option value="constant_25">🔊 25% Background (Higher Music/SFX)</option>
@@ -359,7 +359,7 @@
                             <div class="studio-control-group">
                                 <label for="studio-bg-volume"><i class="ph ph-speaker-high"></i> Background Sound:</label>
                                 <select id="studio-bg-volume" class="styled-select select-xs" onchange="markStudioDirty()">
-                                    <option value="0.04" selected>🔉 4% Background + Anti-Copyright Effect (Default)</option>
+                                    <option value="0.03" selected>🔉 3% Background + Anti-Copyright Effect (Default)</option>
                                     <option value="0.0">🔇 100% Pure Studio Voice (Zero Foreign Sound)</option>
                                     <option value="-1">🎚️ Smooth Cinema Blend (Gentle Background, Ducking)</option>
                                     <option value="0.25">🔊 Balanced Background (25%)</option>
@@ -828,7 +828,7 @@
 
     <script src="/static/js/tools.js"></script>
     <script src="/static/js/srt_parser.js"></script>
-    <script src="/static/js/video_dubber.js?v=20261102d"></script>
+    <script src="/static/js/video_dubber.js?v=20261102e"></script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>

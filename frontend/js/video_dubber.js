@@ -9,10 +9,10 @@ document.addEventListener('DOMContentLoaded', () => {
     initVideoDubberEvents();
     initVoiceTunerControls();
 
-    // Guarantee default audio mode is cinema_4 (4% Background + Anti-Copyright Effect)
+    // Guarantee default audio mode is cinema_3 (3% Background + Anti-Copyright Effect)
     const audioModeSelect = document.getElementById('video-audio-mode');
-    if (audioModeSelect && (!audioModeSelect.value || audioModeSelect.value === 'constant_25' || audioModeSelect.value === 'cinema_10')) {
-        audioModeSelect.value = 'cinema_4';
+    if (audioModeSelect && (!audioModeSelect.value || audioModeSelect.value === 'constant_25' || audioModeSelect.value === 'cinema_10' || audioModeSelect.value === 'cinema_4')) {
+        audioModeSelect.value = 'cinema_3';
     }
 
     const voiceSelect = document.getElementById('video-voice-select');
@@ -846,10 +846,12 @@ async function studioRerenderVideo() {
     btn.innerHTML = `<i class="ph ph-spinner ph-spin"></i> Re-rendering Video...`;
     btn.disabled = true;
 
-    const bgVol = parseFloat(document.getElementById('studio-bg-volume').value || "0.04");
-    let audioMode = "cinema_4";
+    const bgVol = parseFloat(document.getElementById('studio-bg-volume').value || "0.03");
+    let audioMode = "cinema_3";
     if (bgVol <= 0.001 && bgVol >= 0) {
         audioMode = "replace";
+    } else if (Math.abs(bgVol - 0.03) < 0.01) {
+        audioMode = "cinema_3";
     } else if (Math.abs(bgVol - 0.04) < 0.01) {
         audioMode = "cinema_4";
     } else if (Math.abs(bgVol - 0.10) < 0.01) {
