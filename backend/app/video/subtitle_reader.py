@@ -210,6 +210,26 @@ def enhance_segments_with_hardsubs(
         prev_ocr_text = ""
 
         import numpy as np
+        import time
+
+        ocr_t_start = time.time()
+        last_callback_t = 0
+
+        def _notify_ocr(idx: int, note: str = ""):
+            nonlocal last_callback_t
+            if not progress_callback:
+                return
+            now = time.time()
+            if now - last_callback_t < 0.35 and idx < total_cues:
+                return
+            last_callback_t = now
+            elapsed = max(0.1, now - ocr_t_start)
+            cues_per_sec = idx / elapsed
+            eta_val = max(0, (total_cues - idx) / max(0.1, cues_per_sec))
+            eta_str = f"{int(eta_val)}s" if eta_val > 0 else "< 1s"
+            speed_str = f"{cues_per_sec:.1f} cues/s"
+            detail_str = note or f"{idx}/{total_cues} cues ({len(enhanced)} dialogue detected)"
+            progress_callback(idx, total_cues, speed_str, eta_str, detail_str)
 
         for i, seg in enumerate(speech_segments):
             dur = seg["end"] - seg["start"]
@@ -275,8 +295,7 @@ def enhance_segments_with_hardsubs(
 
                 if seg_cues:
                     enhanced.extend(seg_cues)
-                    if progress_callback and (i % 15 == 0 or i == total_cues - 1):
-                        progress_callback(i + 1, total_cues)
+                    _notify_ocr(i + 1)
                     continue
 
             mid_t = (seg["start"] + seg["end"]) / 2.0
@@ -322,8 +341,7 @@ def enhance_segments_with_hardsubs(
                 seg["ocr_detected"] = False
 
             enhanced.append(seg)
-            if progress_callback and (i % 15 == 0 or i == total_cues - 1):
-                progress_callback(i + 1, total_cues)
+            _notify_ocr(i + 1)
 
         # Step 1b: Scan audio silence gaps (>= 1.5s) for visual subtitles missed by ASR
         # (e.g. sobbing, whispering, or emotional dialogue with loud background music)

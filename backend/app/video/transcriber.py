@@ -53,6 +53,7 @@ async def transcribe_video_audio(
     video_path: str,
     language: Optional[str] = None,
     external_subtitle_path: Optional[str] = None,
+    on_stt_progress=None,
     on_ocr_progress=None,
 ) -> Dict[str, Any]:
     """
@@ -104,6 +105,9 @@ async def transcribe_video_audio(
                 vad_parameters=dict(min_silence_duration_ms=400),
             )
 
+            import time
+            stt_start_time = time.time()
+            last_stt_time = 0
             segments_list = []
             for i, segment in enumerate(segments_gen):
                 text = segment.text.strip()
@@ -114,6 +118,20 @@ async def transcribe_video_audio(
                         "end": round(segment.end, 2),
                         "text": text,
                     })
+                now = time.time()
+                if on_stt_progress and (now - last_stt_time >= 0.35):
+                    last_stt_time = now
+                    cur_sec = min(duration, segment.end)
+                    elapsed = max(0.1, now - stt_start_time)
+                    speed_x = cur_sec / elapsed
+                    eta_val = max(0, (duration - cur_sec) / max(0.1, speed_x))
+                    pct = min(100.0, (cur_sec / max(1.0, duration)) * 100)
+                    on_stt_progress(
+                        pct=pct,
+                        speed=f"{speed_x:.1f}x speed",
+                        eta=f"{int(eta_val)}s" if eta_val > 0 else "< 1s",
+                        detail=f"{cur_sec:.0f}s / {duration:.0f}s ({len(segments_list)} cues)"
+                    )
 
             # 4. Enhance speech segments with on-screen burned-in subtitle OCR (Hardsubs)
             if segments_list:

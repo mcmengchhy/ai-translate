@@ -352,7 +352,7 @@ function startPollingJobStatus(jobId) {
         } finally {
             isPollingActive = false;
         }
-    }, 1500);
+    }, 800);
 }
 
 // Update Visual Pipeline Stages
@@ -366,6 +366,40 @@ function updatePipelineProgress(job) {
     if (percentText) percentText.textContent = `${job.progress}%`;
     if (progressBar) progressBar.style.width = `${job.progress}%`;
     if (jobTitle && job.title) jobTitle.textContent = job.title;
+
+    // Live Metrics Strip (Speed, ETA, Details)
+    const speedChip = document.getElementById('metric-speed');
+    const speedVal = document.getElementById('metric-speed-val');
+    if (speedChip && speedVal) {
+        if (job.speed) {
+            speedVal.textContent = job.speed;
+            speedChip.style.display = 'inline-flex';
+        } else {
+            speedChip.style.display = 'none';
+        }
+    }
+
+    const etaChip = document.getElementById('metric-eta');
+    const etaVal = document.getElementById('metric-eta-val');
+    if (etaChip && etaVal) {
+        if (job.eta) {
+            etaVal.textContent = job.eta;
+            etaChip.style.display = 'inline-flex';
+        } else {
+            etaChip.style.display = 'none';
+        }
+    }
+
+    const detailChip = document.getElementById('metric-detail');
+    const detailVal = document.getElementById('metric-detail-val');
+    if (detailChip && detailVal) {
+        if (job.detail) {
+            detailVal.textContent = job.detail;
+            detailChip.style.display = 'inline-flex';
+        } else {
+            detailChip.style.display = 'none';
+        }
+    }
 
     // Stepper icons highlight
     const steps = [

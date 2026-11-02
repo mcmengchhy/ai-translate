@@ -13,7 +13,7 @@
     
     <!-- Phosphor Icons (Lightweight SVG Icons) -->
     <script src="https://unpkg.com/@phosphor-icons/web"></script>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20261102e">
+    <link rel="stylesheet" href="/static/css/styles.css?v=20261102f">
 </head>
 <body>
     <div class="app-background">
@@ -311,6 +311,19 @@
                             </div>
                         </div>
                         <span class="pipeline-percent" id="pipeline-percent-text">10%</span>
+                    </div>
+
+                    <!-- Live Metrics Strip (Speed, ETA, Details) -->
+                    <div class="pipeline-metrics-row" id="pipeline-metrics-row">
+                        <span class="metric-chip" id="metric-speed" style="display: none;">
+                            <i class="ph ph-lightning"></i> <span id="metric-speed-val">0 MB/s</span>
+                        </span>
+                        <span class="metric-chip" id="metric-eta" style="display: none;">
+                            <i class="ph ph-hourglass-high"></i> ETA: <span id="metric-eta-val">0s</span>
+                        </span>
+                        <span class="metric-chip" id="metric-detail" style="display: none;">
+                            <i class="ph ph-info"></i> <span id="metric-detail-val"></span>
+                        </span>
                     </div>
 
                     <div class="pipeline-bar-wrap">
@@ -828,7 +841,7 @@
 
     <script src="/static/js/tools.js"></script>
     <script src="/static/js/srt_parser.js"></script>
-    <script src="/static/js/video_dubber.js?v=20261102e"></script>
+    <script src="/static/js/video_dubber.js?v=20261102f"></script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>

@@ -94,12 +94,28 @@ async def run_video_dubbing_pipeline(
     try:
         # Step 1: Video Ingestion
         job["status"] = "processing"
-        job["stage"] = "Downloading / Preparing video"
-        job["progress"] = 10
+        job["stage"] = "Connecting & downloading video..."
+        job["progress"] = 5
+        job["speed"] = ""
+        job["eta"] = ""
+        job["detail"] = ""
+        _save_job(job_id)
 
         if is_url:
+            def _on_download_progress(pct, speed, eta, detail):
+                job["progress"] = 5 + int(pct * 0.20)
+                job["stage"] = f"Downloading video ({pct:.0f}%)"
+                job["speed"] = speed
+                job["eta"] = eta
+                job["detail"] = detail
+                _save_job(job_id)
+
             logger.info(f"Downloading video from {video_source} (max {max_duration}s)...")
-            dl_info = await download_video(video_source, max_clip_seconds=max_duration)
+            dl_info = await download_video(
+                video_source,
+                max_clip_seconds=max_duration,
+                on_progress=_on_download_progress,
+            )
             video_path = dl_info["video_path"]
             job["title"] = dl_info.get("title", "Video")
             job["platform"] = dl_info.get("platform", "Web Video")
@@ -113,25 +129,46 @@ async def run_video_dubbing_pipeline(
 
         job["video_path"] = str(video_path)
         job["progress"] = 25
+        job["speed"] = ""
+        job["eta"] = ""
+        job["detail"] = "Video ready"
+        _save_job(job_id)
 
         # Step 2: Audio Transcription & Subtitle Reading (Hardsubs / Softsubs)
-        job["stage"] = "Transcribing speech audio"
-        logger.info(f"Transcribing and reading on-screen subtitles for: {video_path}")
+        job["stage"] = "Transcribing speech audio..."
+        _save_job(job_id)
 
-        def _on_ocr_progress(done, total):
-            job["progress"] = 25 + int(done / total * 23)
-            job["stage"] = f"Reading on-screen hardsubs ({done}/{total})"
+        def _on_stt_progress(pct, speed, eta, detail):
+            job["progress"] = 25 + int((pct / 100.0) * 12)
+            job["stage"] = f"Transcribing speech ({pct:.0f}%)"
+            job["speed"] = speed
+            job["eta"] = eta
+            job["detail"] = detail
+            _save_job(job_id)
+
+        def _on_ocr_progress(done, total, speed="", eta="", detail=""):
+            pct = done / max(1, total)
+            job["progress"] = 37 + int(pct * 13)
+            job["stage"] = f"Reading on-screen subtitles ({done}/{total})"
+            job["speed"] = speed
+            job["eta"] = eta
+            job["detail"] = detail or f"{done}/{total} cues scanned"
             _save_job(job_id)
 
         transcription = await transcribe_video_audio(
             video_path,
             external_subtitle_path=subtitle_file_path,
+            on_stt_progress=_on_stt_progress,
             on_ocr_progress=_on_ocr_progress,
         )
         segments = transcription["segments"]
         job["detected_language"] = transcription.get("language", "auto")
         job["subtitle_source"] = transcription.get("source", "speech_and_hardsub_ocr")
         job["progress"] = 50
+        job["speed"] = ""
+        job["eta"] = ""
+        job["detail"] = f"Found {len(segments)} dialogue cues"
+        _save_job(job_id)
 
         if not segments:
             raise RuntimeError("No spoken dialogue or speech detected in the video audio track.")
@@ -155,8 +192,11 @@ async def run_video_dubbing_pipeline(
                 except Exception as e:
                     logger.warning(f"Gemini batch failed: {e}. Falling back to cluster translation...")
                     await translate_dialogue_clusters_free(b_chunk, job["detected_language"], tone=tone)
-                job["progress"] = 50 + int((min(b + batch_size, len(segments)) / len(segments)) * 20)
-                job["stage"] = f"Translating dialogue ({min(b + batch_size, len(segments))}/{len(segments)})"
+                done_cues = min(b + batch_size, len(segments))
+                job["progress"] = 50 + int((done_cues / max(1, len(segments))) * 20)
+                job["stage"] = f"Translating dialogue ({done_cues}/{len(segments)})"
+                job["speed"] = "Gemini 3 Flash"
+                job["detail"] = f"{done_cues}/{len(segments)} lines translated"
                 _save_job(job_id)
         else:
             def _on_trans_progress(done_chunks, total_chunks):
@@ -203,9 +243,28 @@ async def run_video_dubbing_pipeline(
         _save_job(job_id)
 
         # Step 4: Khmer Speech Synthesis (TTS)
-        job["stage"] = "Synthesizing Khmer voiceover"
+        job["stage"] = "Synthesizing Khmer voiceover..."
+        job["speed"] = "Edge-TTS Neural"
+        job["detail"] = f"Synthesizing {len(segments)} audio segments"
+        _save_job(job_id)
         logger.info(f"Generating Khmer speech ({voice_type}) for {len(segments)} segments...")
         audio_dir = Path(video_path).parent / f"voice_{job_id}"
+
+        import time
+        t_tts_start = time.time()
+
+        def _on_tts_progress(done, total):
+            elapsed = max(0.1, time.time() - t_tts_start)
+            tts_speed = done / elapsed
+            eta_val = max(0, (total - done) / max(0.1, tts_speed))
+            job.update({
+                "progress": 70 + int((done / max(1, total)) * 15),
+                "stage": f"Synthesizing voice ({done}/{total})",
+                "speed": f"{tts_speed:.1f} clips/s",
+                "eta": f"{int(eta_val)}s" if eta_val > 0 else "< 1s",
+                "detail": f"{done}/{total} clips synthesized"
+            })
+            _save_job(job_id)
 
         # Synthesize with studio-quality enhancement (enhance=True) matching preview audio exactly
         segments = await synthesize_segments(
@@ -216,15 +275,20 @@ async def run_video_dubbing_pipeline(
             volume=voice_volume,
             max_concurrency=4,
             enhance=True,
-            on_progress=lambda done, total: (
-                job.update({"progress": 70 + int(done / total * 13), "stage": f"Synthesizing voice ({done}/{total})"}),
-                _save_job(job_id),
-            ),
+            on_progress=_on_tts_progress,
         )
         job["progress"] = 85
+        job["speed"] = ""
+        job["eta"] = ""
+        job["detail"] = "All audio clips ready"
+        _save_job(job_id)
 
         # Step 5: Audio Mixing & Video Dubbing
-        job["stage"] = "Mixing audio and assembling video"
+        job["stage"] = "Mixing 3% background audio & assembling video..."
+        job["speed"] = "FFmpeg 48kHz"
+        job["eta"] = "few seconds"
+        job["detail"] = "Blending collision-free master track & subtitles"
+        _save_job(job_id)
         logger.info("Assembling final dubbed video...")
         dub_result = await assemble_dubbed_video(
             video_path=video_path,

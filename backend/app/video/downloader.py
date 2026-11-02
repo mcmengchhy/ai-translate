@@ -62,7 +62,8 @@ def detect_video_platform(url: str) -> str:
 async def download_bilibili_direct(
     bvid: str,
     output_dir: Path,
-    max_clip_seconds: Optional[int] = 90
+    max_clip_seconds: Optional[int] = 90,
+    on_progress: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Downloads Bilibili video directly using Bilibili's official HTML5 API with
@@ -154,13 +155,69 @@ async def download_bilibili_direct(
             clip_seconds = duration
             logger.info(f"Streaming full Bilibili video {bvid} ({duration}s) directly via FFmpeg...")
 
-        cmd.extend(["-c", "copy", "-movflags", "+faststart", str(final_video_path)])
+        cmd.extend(["-c", "copy", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(final_video_path)])
 
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None,
-            lambda: subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL
         )
+
+        target_dur = clip_seconds
+        last_progress_time = 0
+        current_us = 0
+        speed_str = ""
+        total_size_bytes = 0
+
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            line_str = line.decode("utf-8", errors="ignore").strip()
+            if "=" in line_str:
+                k, v = line_str.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+                if k in ("out_time_us", "out_time_ms"):
+                    try:
+                        current_us = float(v)
+                    except ValueError:
+                        pass
+                elif k == "speed":
+                    speed_str = v
+                elif k == "total_size":
+                    try:
+                        total_size_bytes = int(v)
+                    except ValueError:
+                        pass
+                elif k == "progress" and v == "continue":
+                    cur_sec = current_us / 1000000.0 if current_us > 1000 else current_us
+                    now = time.time()
+                    if on_progress and (now - last_progress_time >= 0.4):
+                        last_progress_time = now
+                        pct = min(99.0, max(1.0, (cur_sec / max(1.0, target_dur)) * 100))
+                        speed_disp = speed_str if speed_str and speed_str != "N/A" else "Streaming"
+                        speed_mult = 1.0
+                        if "x" in speed_disp:
+                            try:
+                                speed_mult = float(speed_disp.replace("x", ""))
+                            except ValueError:
+                                speed_mult = 1.0
+                        eta_val = max(0, (target_dur - cur_sec) / max(0.1, speed_mult))
+                        eta_disp = f"{int(eta_val)}s" if eta_val > 0 else "< 1s"
+                        if total_size_bytes > 0:
+                            mb_downloaded = total_size_bytes / (1024 * 1024)
+                            detail_disp = f"{mb_downloaded:.1f} MB ({cur_sec:.0f}s / {target_dur:.0f}s)"
+                        else:
+                            detail_disp = f"{cur_sec:.0f}s / {target_dur:.0f}s"
+                        on_progress(pct, speed_disp, eta_disp, detail_disp)
+
+        await process.wait()
+        if process.returncode != 0:
+            raise RuntimeError(f"FFmpeg download failed with returncode {process.returncode}")
+
+        if on_progress:
+            on_progress(100.0, "Ready", "0s", f"{target_dur:.0f}s / {target_dur:.0f}s")
 
         from .dubber import get_media_duration
         actual_dur = get_media_duration(str(final_video_path))
@@ -209,7 +266,8 @@ async def download_direct_media(
 async def download_video(
     url: str,
     output_dir: Optional[Path] = None,
-    max_clip_seconds: Optional[int] = 90
+    max_clip_seconds: Optional[int] = 90,
+    on_progress: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Downloads video from YouTube, Bilibili, TikTok, Facebook, Twitter/X, Douyin, or direct video URL.
@@ -226,7 +284,7 @@ async def download_video(
     if bvid:
         try:
             logger.info(f"Detected Bilibili BV ID: {bvid}. Using direct fast API...")
-            res = await download_bilibili_direct(bvid, dest_dir, max_clip_seconds=max_clip_seconds)
+            res = await download_bilibili_direct(bvid, dest_dir, max_clip_seconds=max_clip_seconds, on_progress=on_progress)
             res["platform"] = "Bilibili"
             return res
         except Exception as e:
@@ -263,6 +321,30 @@ async def download_video(
 
     if has_node:
         ydl_opts['js_runtimes'] = {'node': {}}
+
+    if on_progress:
+        last_yt_hook = 0
+        def _yt_hook(d):
+            nonlocal last_yt_hook
+            if d.get("status") == "downloading":
+                now = time.time()
+                if now - last_yt_hook < 0.4:
+                    return
+                last_yt_hook = now
+                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                downloaded = d.get("downloaded_bytes") or 0
+                speed = d.get("speed") or 0
+                eta = d.get("eta") or 0
+                pct = (downloaded / total * 100) if total > 0 else 50.0
+                speed_mb = (speed / (1024 * 1024)) if speed else 0
+                speed_str = f"{speed_mb:.1f} MB/s" if speed_mb > 0 else ""
+                eta_str = f"{int(eta)}s" if eta else ""
+                detail_str = f"{downloaded/(1024*1024):.1f} MB / {total/(1024*1024):.1f} MB" if total > 0 else f"{downloaded/(1024*1024):.1f} MB"
+                on_progress(pct, speed_str, eta_str, detail_str)
+            elif d.get("status") == "finished":
+                on_progress(100.0, "Complete", "0s", "Download finished")
+
+        ydl_opts["progress_hooks"] = [_yt_hook]
 
     # Fast duration range download if requested (> 0)
     if max_clip_seconds and max_clip_seconds > 0:
