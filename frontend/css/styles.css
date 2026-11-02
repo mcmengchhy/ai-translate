@@ -1256,7 +1256,7 @@ input:checked + .slider:before {
 .dub-config-bar {
     display: flex;
     flex-wrap: wrap;
-    gap: 20px;
+    gap: 16px;
     align-items: flex-end;
     margin-top: 24px;
     padding-top: 20px;
@@ -1266,41 +1266,70 @@ input:checked + .slider:before {
 .config-col {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    flex: 1;
-    min-width: 200px;
+    gap: 8px;
+    flex: 1 1 200px;
+    min-width: 190px;
 }
 
 .config-col.voice-col {
-    flex: 1.6;
-    min-width: 330px;
+    flex: 1.5 1 280px;
+    min-width: 270px;
 }
 
-.voice-selector-row {
+.config-col-header {
     display: flex;
-    gap: 8px;
+    justify-content: space-between;
     align-items: center;
-    width: 100%;
+    gap: 8px;
+    min-height: 22px;
 }
 
-.voice-selector-row .styled-select {
-    flex: 1;
-    min-width: 0;
+.voice-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
 }
 
-.voice-selector-row .btn-ghost {
+.btn-voice-tool {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(99, 102, 241, 0.12);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    color: #a5b4fc;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 3px 8px;
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    transition: all 0.15s ease;
     white-space: nowrap;
-    flex-shrink: 0;
-    padding: 8px 12px;
+    text-decoration: none;
+    line-height: 1;
 }
 
-.config-col label {
+.btn-voice-tool:hover {
+    background: rgba(99, 102, 241, 0.25);
+    border-color: rgba(99, 102, 241, 0.6);
+    color: #ffffff;
+}
+
+.btn-voice-tool.active {
+    background: var(--accent-indigo);
+    border-color: var(--accent-indigo);
+    color: #ffffff;
+    box-shadow: 0 0 8px rgba(99, 102, 241, 0.4);
+}
+
+.config-col label,
+.config-col-header label {
     font-size: 12px;
     font-weight: 600;
     color: var(--text-secondary);
     display: flex;
     align-items: center;
     gap: 5px;
+    margin: 0;
 }
 
 .styled-select {
@@ -1314,21 +1343,13 @@ input:checked + .slider:before {
     outline: none;
     transition: all 0.2s;
     cursor: pointer;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .styled-select:focus {
     border-color: var(--accent-indigo);
     box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
-}
-
-.voice-picker-wrap {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-}
-
-.voice-picker-wrap .styled-select {
-    flex: 1;
 }
 
 .checkbox-col {

@@ -309,7 +309,7 @@ async def assemble_dubbed_video(
     video_path: str,
     segments: List[Dict[str, Any]],
     output_filename: Optional[str] = None,
-    audio_mode: str = "cinema_10",  # "cinema_10" (10% background + anti-copyright), "replace", "smart_cinema"
+    audio_mode: str = "cinema_4",  # "cinema_4" (4% background + anti-copyright), "replace", "smart_cinema"
     bg_volume: Optional[float] = None,
     burn_subtitles: bool = False,
 ) -> Dict[str, Any]:
@@ -385,12 +385,13 @@ async def assemble_dubbed_video(
                 f"[1:a]volume=1.0[khmer];"
                 f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
             )
-    elif audio_mode in ("cinema_10", "default"):
-        # 10% Original Background + Anti-Copyright Effect (DEFAULT):
-        # Keeps original fighting sound / music at 10% volume, while altering Content ID fingerprint
+    elif audio_mode in ("cinema_4", "cinema_10", "default"):
+        # 4% Original Background + Anti-Copyright Effect (DEFAULT):
+        # Keeps original fighting sound / music at 4% volume, while altering Content ID fingerprint
         # and letting the 100% Khmer voice stay crisp, prominent, and uninterrupted.
+        eff_vol = bg_volume if (bg_volume is not None and bg_volume > 0) else 0.04
         audio_filter = (
-            f"[0:a]volume=0.10,{clean_anti_copyright}[bg];"
+            f"[0:a]volume={eff_vol:.3f},{clean_anti_copyright}[bg];"
             f"[1:a]volume=1.0[khmer];"
             f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
@@ -419,9 +420,9 @@ async def assemble_dubbed_video(
             "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
     else:
-        # Default fallback: 10% background with anti-copyright effect
+        # Default fallback: 4% background with anti-copyright effect
         audio_filter = (
-            f"[0:a]volume=0.10,{clean_anti_copyright}[bg];"
+            f"[0:a]volume=0.04,{clean_anti_copyright}[bg];"
             f"[1:a]volume=1.0[khmer];"
             "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )

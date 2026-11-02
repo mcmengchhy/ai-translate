@@ -13,7 +13,7 @@
     
     <!-- Phosphor Icons (Lightweight SVG Icons) -->
     <script src="https://unpkg.com/@phosphor-icons/web"></script>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20261102b">
+    <link rel="stylesheet" href="/static/css/styles.css?v=20261102d">
 </head>
 <body>
     <div class="app-background">
@@ -83,27 +83,31 @@
 
                     <!-- Voice & Audio Configuration Bar -->
                     <div class="dub-config-bar">
-                        <div class="config-col">
-                            <label><i class="ph ph-user-sound"></i> Khmer Voice (សំឡេងខ្មែរ)</label>
-                            <div class="voice-picker-wrap">
-                                <select id="video-voice-select" class="styled-select">
-                                    <option value="male" selected>👨 Piseth (Male Neural) - Friendly & Clear</option>
-                                    <option value="female">👩 Sreymom (Female Neural) - Warm & Expressive</option>
-                                    <option value="multi">🎭 Auto Multi-Voice (Characters Match 👨 Male / 👩 Female)</option>
-                                </select>
-                                <button type="button" class="btn-ghost btn-sm" id="preview-voice-btn" title="Test sample speech">
-                                    <i class="ph ph-speaker-high"></i> Test
-                                </button>
-                                <button type="button" class="btn-ghost btn-sm" id="btn-toggle-voice-tuner" title="Fine-tune pitch, speed, and volume for male and female voices">
-                                    <i class="ph ph-sliders"></i> Tune Voice
-                                </button>
+                        <div class="config-col voice-col">
+                            <div class="config-col-header">
+                                <label><i class="ph ph-user-sound"></i> Khmer Voice (សំឡេងខ្មែរ)</label>
+                                <div class="voice-header-actions">
+                                    <button type="button" class="btn-voice-tool" id="preview-voice-btn" title="Test sample speech">
+                                        <i class="ph ph-speaker-high"></i> Test
+                                    </button>
+                                    <button type="button" class="btn-voice-tool" id="btn-toggle-voice-tuner" title="Fine-tune pitch, speed, and volume for male and female voices">
+                                        <i class="ph ph-sliders"></i> Tune Voice
+                                    </button>
+                                </div>
                             </div>
+                            <select id="video-voice-select" class="styled-select">
+                                <option value="multi" selected>🎭 Auto Multi-Voice (Characters Match 👨 Male / 👩 Female)</option>
+                                <option value="male">👨 Piseth (Male Neural) - Friendly & Clear</option>
+                                <option value="female">👩 Sreymom (Female Neural) - Warm & Expressive</option>
+                            </select>
                         </div>
 
                         <div class="config-col">
-                            <label><i class="ph ph-sliders"></i> Audio Mixing Mode</label>
+                            <div class="config-col-header">
+                                <label><i class="ph ph-sliders"></i> Audio Mixing Mode</label>
+                            </div>
                             <select id="video-audio-mode" class="styled-select">
-                                <option value="cinema_10" selected>🔉 10% Background + Anti-Copyright Effect (Default)</option>
+                                <option value="cinema_4" selected>🔉 4% Background + Anti-Copyright Effect (Default)</option>
                                 <option value="replace">🔇 100% Pure Studio Voiceover (Zero noise / foreign sound)</option>
                                 <option value="smart_cinema">🎚️ Smooth Cinema Blend (Gentle Background, Ducking)</option>
                                 <option value="constant_25">🔊 25% Background (Higher Music/SFX)</option>
@@ -111,23 +115,25 @@
                         </div>
 
                         <div class="config-col">
-                            <label><i class="ph ph-clock"></i> Video Duration</label>
+                            <div class="config-col-header">
+                                <label><i class="ph ph-clock"></i> Video Duration</label>
+                            </div>
                             <select id="video-duration-select" class="styled-select">
                                 <option value="0" selected>🎬 Full Video</option>
                                 <option value="90">⚡ 1:30 (Quick Test)</option>
                                 <option value="300">⏱️ 5 Minutes</option>
-                                <option value="600">📽️ 10 Minutes</option>
-                                <option value="600">⏱️ 10 Minutes (~4 mins)</option>
+                                <option value="600">📽️ 10 Minutes (~4 mins)</option>
                                 <option value="1800">⏱️ 30 Minutes (~12 mins)</option>
                                 <option value="3600">⏱️ 1 Hour (~25 mins)</option>
                                 <option value="7200">⏱️ 2 Hours (~45 mins)</option>
                                 <option value="18000">⏱️ 5 Hours (~1.5 hours)</option>
-                                <option value="0">🎬 Full Video (Whole Length — 5h, 10h+ Unlimited)</option>
                             </select>
                         </div>
 
                         <div class="config-col">
-                            <label><i class="ph ph-chat-circle-dots"></i> Linguistic Tone</label>
+                            <div class="config-col-header">
+                                <label><i class="ph ph-chat-circle-dots"></i> Linguistic Tone</label>
+                            </div>
                             <select id="video-tone-select" class="styled-select">
                                 <option value="standard" selected>ទូទៅ Standard</option>
                                 <option value="casual">សាមញ្ញ Casual / Conversational</option>
@@ -353,7 +359,7 @@
                             <div class="studio-control-group">
                                 <label for="studio-bg-volume"><i class="ph ph-speaker-high"></i> Background Sound:</label>
                                 <select id="studio-bg-volume" class="styled-select select-xs" onchange="markStudioDirty()">
-                                    <option value="0.10" selected>🔉 10% Background + Anti-Copyright Effect (Default)</option>
+                                    <option value="0.04" selected>🔉 4% Background + Anti-Copyright Effect (Default)</option>
                                     <option value="0.0">🔇 100% Pure Studio Voice (Zero Foreign Sound)</option>
                                     <option value="-1">🎚️ Smooth Cinema Blend (Gentle Background, Ducking)</option>
                                     <option value="0.25">🔊 Balanced Background (25%)</option>
@@ -822,7 +828,7 @@
 
     <script src="/static/js/tools.js"></script>
     <script src="/static/js/srt_parser.js"></script>
-    <script src="/static/js/video_dubber.js?v=20261102b"></script>
+    <script src="/static/js/video_dubber.js?v=20261102d"></script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>
