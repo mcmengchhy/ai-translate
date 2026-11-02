@@ -258,6 +258,74 @@ def enhance_segments_with_hardsubs(
             if progress_callback and (i % 15 == 0 or i == total_cues - 1):
                 progress_callback(i + 1, total_cues)
 
+        # Step 1b: Scan audio silence gaps (>= 2.5s) for visual subtitles missed by ASR
+        # (e.g. sobbing, whispering, or emotional dialogue with loud background music)
+        gap_segments = []
+        for i in range(len(enhanced)):
+            cur_end = enhanced[i]["end"]
+            next_start = enhanced[i + 1]["start"] if i + 1 < len(enhanced) else cur_end + 15.0
+            gap_dur = next_start - cur_end
+            if gap_dur >= 2.5:
+                t = cur_end + 0.8
+                last_found_text = ""
+                cue_start = None
+                cue_end = None
+                while t < next_start - 0.4:
+                    cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        crop = frame[crop_top:crop_bottom, crop_left:crop_right]
+                        res, _ = ocr(crop)
+                        found_text = ""
+                        if res:
+                            valid_lines = [r[1].strip() for r in res if r[2] > 0.6 and len(r[1].strip()) >= 2]
+                            if valid_lines:
+                                found_text = " ".join(valid_lines)
+                        
+                        if found_text:
+                            if not cue_start:
+                                cue_start = t
+                                cue_end = t + 1.2
+                                last_found_text = found_text
+                            elif found_text == last_found_text:
+                                cue_end = t + 1.0
+                            else:
+                                gap_segments.append({
+                                    "start": round(cue_start, 2),
+                                    "end": round(min(cue_end, next_start - 0.2), 2),
+                                    "text": last_found_text,
+                                    "source": "hardsub_gap_recovery",
+                                    "ocr_detected": True,
+                                })
+                                cue_start = t
+                                cue_end = t + 1.2
+                                last_found_text = found_text
+                        else:
+                            if cue_start and last_found_text:
+                                gap_segments.append({
+                                    "start": round(cue_start, 2),
+                                    "end": round(min(cue_end, next_start - 0.2), 2),
+                                    "text": last_found_text,
+                                    "source": "hardsub_gap_recovery",
+                                    "ocr_detected": True,
+                                })
+                                cue_start = None
+                                last_found_text = ""
+                    t += 1.0
+                if cue_start and last_found_text:
+                    gap_segments.append({
+                        "start": round(cue_start, 2),
+                        "end": round(min(cue_end, next_start - 0.2), 2),
+                        "text": last_found_text,
+                        "source": "hardsub_gap_recovery",
+                        "ocr_detected": True,
+                    })
+
+        if gap_segments:
+            logger.info(f"Recovered {len(gap_segments)} visual subtitle cues from audio silence gaps!")
+            enhanced.extend(gap_segments)
+            enhanced.sort(key=lambda s: s["start"])
+
         # Step 2: Merge adjacent speech segments that share the exact same subtitle line or fragments
         # (Combines broken speech fragments into complete, logical cinematic dialogue sentences)
         merged = []

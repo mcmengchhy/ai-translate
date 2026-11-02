@@ -309,7 +309,7 @@ async def assemble_dubbed_video(
     video_path: str,
     segments: List[Dict[str, Any]],
     output_filename: Optional[str] = None,
-    audio_mode: str = "replace",  # "replace" (100% pure voiceover matching preview), "ducking", "mute", "smart_cinema"
+    audio_mode: str = "cinema_10",  # "cinema_10" (10% background + anti-copyright), "replace", "smart_cinema"
     bg_volume: Optional[float] = None,
     burn_subtitles: bool = False,
 ) -> Dict[str, Any]:
@@ -385,23 +385,32 @@ async def assemble_dubbed_video(
                 f"[1:a]volume=1.0[khmer];"
                 f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
             )
-    elif audio_mode in ("smart_cinema", "smart_sidechain", "smart", "cinema"):
-        # Smooth Cinema Ducking (DEFAULT): 25% background with gentle, smooth ducking (no choppy pumping)
+    elif audio_mode in ("cinema_10", "default"):
+        # 10% Original Background + Anti-Copyright Effect (DEFAULT):
+        # Keeps original fighting sound / music at 10% volume, while altering Content ID fingerprint
+        # and letting the 100% Khmer voice stay crisp, prominent, and uninterrupted.
         audio_filter = (
-            f"[0:a]volume=0.25,{clean_anti_copyright}[bg_proc];"
-            "[bg_proc][1:a]sidechaincompress=threshold=0.015:ratio=3.5:attack=30:release=650:knee=2.5[bg_ducked];"
-            "[1:a]volume=1.0[khmer];"
-            "[bg_ducked][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
-        )
-    elif audio_mode in ("constant_30", "ducking"):
-        audio_filter = (
-            f"[0:a]volume=0.25,{clean_anti_copyright}[bg];"
+            f"[0:a]volume=0.10,{clean_anti_copyright}[bg];"
             f"[1:a]volume=1.0[khmer];"
             f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
     elif audio_mode in ("mute", "replace"):
         # 100% Pure Studio Voiceover: only Khmer dubbing audible, 100% bit-exact identical to preview
         audio_filter = "[1:a]volume=1.0[aout]"
+    elif audio_mode in ("smart_cinema", "smart_sidechain", "smart", "cinema"):
+        # Smooth Cinema Ducking: 25% background with gentle, smooth ducking (no choppy pumping)
+        audio_filter = (
+            f"[0:a]volume=0.25,{clean_anti_copyright}[bg_proc];"
+            "[bg_proc][1:a]sidechaincompress=threshold=0.015:ratio=3.5:attack=30:release=650:knee=2.5[bg_ducked];"
+            "[1:a]volume=1.0[khmer];"
+            "[bg_ducked][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
+        )
+    elif audio_mode in ("constant_30", "ducking", "constant_25"):
+        audio_filter = (
+            f"[0:a]volume=0.25,{clean_anti_copyright}[bg];"
+            f"[1:a]volume=1.0[khmer];"
+            f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
+        )
     elif audio_mode == "duck_subtle":
         # 8% subtle background audio
         audio_filter = (
@@ -410,9 +419,9 @@ async def assemble_dubbed_video(
             "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
     else:
-        # Default fallback
+        # Default fallback: 10% background with anti-copyright effect
         audio_filter = (
-            f"[0:a]volume=0.25,{clean_anti_copyright}[bg];"
+            f"[0:a]volume=0.10,{clean_anti_copyright}[bg];"
             f"[1:a]volume=1.0[khmer];"
             "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )

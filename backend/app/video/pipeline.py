@@ -78,7 +78,7 @@ async def run_video_dubbing_pipeline(
     voice_type: str = "male",
     tone: str = "standard",
     engine_name: str = "auto",
-    audio_mode: str = "replace",
+    audio_mode: str = "cinema_10",
     burn_subtitles: bool = False,
     max_duration: Optional[int] = 90,
     api_key: Optional[str] = None,

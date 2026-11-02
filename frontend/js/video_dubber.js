@@ -835,18 +835,16 @@ async function studioRerenderVideo() {
     btn.innerHTML = `<i class="ph ph-spinner ph-spin"></i> Re-rendering Video...`;
     btn.disabled = true;
 
-    const bgVol = parseFloat(document.getElementById('studio-bg-volume').value || "-1.0");
-    let audioMode = "smart_cinema";
+    const bgVol = parseFloat(document.getElementById('studio-bg-volume').value || "0.10");
+    let audioMode = "cinema_10";
     if (bgVol <= 0.001 && bgVol >= 0) {
         audioMode = "replace";
+    } else if (Math.abs(bgVol - 0.10) < 0.01) {
+        audioMode = "cinema_10";
     } else if (bgVol < 0) {
         audioMode = "smart_cinema";
-    } else if (Math.abs(bgVol - 0.30) < 0.01) {
-        audioMode = "constant_30";
-    } else if (bgVol > 0 && bgVol <= 0.06) {
-        audioMode = "duck_subtle";
-    } else if (bgVol > 0.06) {
-        audioMode = "ducking";
+    } else if (bgVol >= 0.20) {
+        audioMode = "constant_25";
     }
 
     try {
