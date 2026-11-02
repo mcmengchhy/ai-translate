@@ -1271,6 +1271,29 @@ input:checked + .slider:before {
     min-width: 200px;
 }
 
+.config-col.voice-col {
+    flex: 1.6;
+    min-width: 330px;
+}
+
+.voice-selector-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    width: 100%;
+}
+
+.voice-selector-row .styled-select {
+    flex: 1;
+    min-width: 0;
+}
+
+.voice-selector-row .btn-ghost {
+    white-space: nowrap;
+    flex-shrink: 0;
+    padding: 8px 12px;
+}
+
 .config-col label {
     font-size: 12px;
     font-weight: 600;

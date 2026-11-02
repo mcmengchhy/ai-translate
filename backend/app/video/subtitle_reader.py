@@ -212,6 +212,73 @@ def enhance_segments_with_hardsubs(
         import numpy as np
 
         for i, seg in enumerate(speech_segments):
+            dur = seg["end"] - seg["start"]
+            if dur >= 3.5:
+                # Long speech block: dramatic music often keeps Whisper VAD open across multiple dialogue lines.
+                # Scan internally at 0.6s intervals to discover every true on-screen subtitle line.
+                t = seg["start"]
+                seg_cues = []
+                c_start = None
+                c_end = None
+                l_text = ""
+                while t <= seg["end"]:
+                    cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+                    ret, frame = cap.read()
+                    f_text = ""
+                    if ret and frame is not None:
+                        crop = frame[crop_top:crop_bottom, crop_left:crop_right]
+                        res, _ = ocr(crop)
+                        if res:
+                            v = [r[1].strip() for r in res if r[2] > 0.65 and len(r[1].strip()) >= 2]
+                            if v:
+                                f_text = " ".join(v)
+                    if f_text:
+                        if not c_start:
+                            c_start = t
+                            c_end = t + 0.6
+                            l_text = f_text
+                        elif f_text == l_text or f_text in l_text or l_text in f_text:
+                            c_end = t + 0.6
+                            if len(f_text) > len(l_text):
+                                l_text = f_text
+                        else:
+                            seg_cues.append({
+                                "start": round(c_start, 2),
+                                "end": round(c_end, 2),
+                                "text": l_text,
+                                "asr_text": seg.get("text", ""),
+                                "ocr_detected": True,
+                            })
+                            c_start = t
+                            c_end = t + 0.6
+                            l_text = f_text
+                    else:
+                        if c_start and l_text:
+                            seg_cues.append({
+                                "start": round(c_start, 2),
+                                "end": round(c_end, 2),
+                                "text": l_text,
+                                "asr_text": seg.get("text", ""),
+                                "ocr_detected": True,
+                            })
+                            c_start = None
+                            l_text = ""
+                    t += 0.6
+                if c_start and l_text:
+                    seg_cues.append({
+                        "start": round(c_start, 2),
+                        "end": round(c_end, 2),
+                        "text": l_text,
+                        "asr_text": seg.get("text", ""),
+                        "ocr_detected": True,
+                    })
+
+                if seg_cues:
+                    enhanced.extend(seg_cues)
+                    if progress_callback and (i % 15 == 0 or i == total_cues - 1):
+                        progress_callback(i + 1, total_cues)
+                    continue
+
             mid_t = (seg["start"] + seg["end"]) / 2.0
             target_msec = mid_t * 1000.0
 
@@ -258,19 +325,80 @@ def enhance_segments_with_hardsubs(
             if progress_callback and (i % 15 == 0 or i == total_cues - 1):
                 progress_callback(i + 1, total_cues)
 
-        # Step 1b: Scan audio silence gaps (>= 2.5s) for visual subtitles missed by ASR
+        # Step 1b: Scan audio silence gaps (>= 1.5s) for visual subtitles missed by ASR
         # (e.g. sobbing, whispering, or emotional dialogue with loud background music)
         gap_segments = []
+        step = 0.6
+
+        # Check gap before first speech segment if video begins with visual title/dialogue
+        if enhanced and enhanced[0]["start"] >= 1.5:
+            t = 0.3
+            first_start = enhanced[0]["start"]
+            cue_start = None
+            cue_end = None
+            last_found_text = ""
+            while t <= first_start + 0.3:
+                cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    crop = frame[crop_top:crop_bottom, crop_left:crop_right]
+                    res, _ = ocr(crop)
+                    found_text = ""
+                    if res:
+                        valid_lines = [r[1].strip() for r in res if r[2] > 0.65 and len(r[1].strip()) >= 2]
+                        if valid_lines:
+                            found_text = " ".join(valid_lines)
+                    if found_text:
+                        if not cue_start:
+                            cue_start = t
+                            cue_end = t + step
+                            last_found_text = found_text
+                        elif found_text == last_found_text or found_text in last_found_text or last_found_text in found_text:
+                            cue_end = t + step
+                            if len(found_text) > len(last_found_text):
+                                last_found_text = found_text
+                        else:
+                            gap_segments.append({
+                                "start": round(cue_start, 2),
+                                "end": round(cue_end, 2),
+                                "text": last_found_text,
+                                "source": "hardsub_gap_recovery",
+                                "ocr_detected": True,
+                            })
+                            cue_start = t
+                            cue_end = t + step
+                            last_found_text = found_text
+                    else:
+                        if cue_start and last_found_text:
+                            gap_segments.append({
+                                "start": round(cue_start, 2),
+                                "end": round(cue_end, 2),
+                                "text": last_found_text,
+                                "source": "hardsub_gap_recovery",
+                                "ocr_detected": True,
+                            })
+                            cue_start = None
+                            last_found_text = ""
+                t += step
+            if cue_start and last_found_text:
+                gap_segments.append({
+                    "start": round(cue_start, 2),
+                    "end": round(cue_end, 2),
+                    "text": last_found_text,
+                    "source": "hardsub_gap_recovery",
+                    "ocr_detected": True,
+                })
+
         for i in range(len(enhanced)):
             cur_end = enhanced[i]["end"]
-            next_start = enhanced[i + 1]["start"] if i + 1 < len(enhanced) else cur_end + 15.0
+            next_start = enhanced[i + 1]["start"] if i + 1 < len(enhanced) else cur_end + 12.0
             gap_dur = next_start - cur_end
-            if gap_dur >= 2.5:
-                t = cur_end + 0.8
+            if gap_dur >= 1.5:
+                t = cur_end + 0.3
                 last_found_text = ""
                 cue_start = None
                 cue_end = None
-                while t < next_start - 0.4:
+                while t <= next_start + 0.5:
                     cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
                     ret, frame = cap.read()
                     if ret and frame is not None:
@@ -278,48 +406,55 @@ def enhance_segments_with_hardsubs(
                         res, _ = ocr(crop)
                         found_text = ""
                         if res:
-                            valid_lines = [r[1].strip() for r in res if r[2] > 0.6 and len(r[1].strip()) >= 2]
+                            valid_lines = [r[1].strip() for r in res if r[2] > 0.65 and len(r[1].strip()) >= 2]
                             if valid_lines:
                                 found_text = " ".join(valid_lines)
                         
                         if found_text:
                             if not cue_start:
                                 cue_start = t
-                                cue_end = t + 1.2
+                                cue_end = t + step
                                 last_found_text = found_text
-                            elif found_text == last_found_text:
-                                cue_end = t + 1.0
+                            elif found_text == last_found_text or found_text in last_found_text or last_found_text in found_text:
+                                cue_end = t + step
+                                if len(found_text) > len(last_found_text):
+                                    last_found_text = found_text
                             else:
                                 gap_segments.append({
                                     "start": round(cue_start, 2),
-                                    "end": round(min(cue_end, next_start - 0.2), 2),
+                                    "end": round(cue_end, 2),
                                     "text": last_found_text,
                                     "source": "hardsub_gap_recovery",
                                     "ocr_detected": True,
                                 })
                                 cue_start = t
-                                cue_end = t + 1.2
+                                cue_end = t + step
                                 last_found_text = found_text
                         else:
                             if cue_start and last_found_text:
                                 gap_segments.append({
                                     "start": round(cue_start, 2),
-                                    "end": round(min(cue_end, next_start - 0.2), 2),
+                                    "end": round(cue_end, 2),
                                     "text": last_found_text,
                                     "source": "hardsub_gap_recovery",
                                     "ocr_detected": True,
                                 })
                                 cue_start = None
                                 last_found_text = ""
-                    t += 1.0
+                    t += step
                 if cue_start and last_found_text:
                     gap_segments.append({
                         "start": round(cue_start, 2),
-                        "end": round(min(cue_end, next_start - 0.2), 2),
+                        "end": round(cue_end, 2),
                         "text": last_found_text,
                         "source": "hardsub_gap_recovery",
                         "ocr_detected": True,
                     })
+
+                # If last recovered gap segment extends into next segment with different text, adjust boundary
+                if i + 1 < len(enhanced) and gap_segments and gap_segments[-1]["end"] > enhanced[i + 1]["start"]:
+                    if gap_segments[-1]["text"] != enhanced[i + 1].get("text", ""):
+                        enhanced[i + 1]["start"] = round(gap_segments[-1]["end"] + 0.05, 2)
 
         if gap_segments:
             logger.info(f"Recovered {len(gap_segments)} visual subtitle cues from audio silence gaps!")
@@ -360,6 +495,9 @@ def enhance_segments_with_hardsubs(
                 if "asr_text" in seg and "asr_text" in prev and seg["asr_text"] != prev["asr_text"]:
                     prev["asr_text"] = f"{prev['asr_text']} {seg['asr_text']}".strip()
             else:
+                # If slight boundary overlap with previous distinct cue, trim
+                if seg["start"] < prev["end"]:
+                    prev["end"] = round(seg["start"] - 0.05, 2)
                 merged.append(seg)
 
         # Re-index merged segments

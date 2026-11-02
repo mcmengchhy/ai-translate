@@ -100,7 +100,10 @@ async def download_bilibili_direct(
         stream_size = durl.get("size", 0)
 
         # 3. Stream direct to MP4 using FFmpeg (fast, losslessly copies audio/video with valid MP4 container)
-        final_video_path = output_dir / f"{bvid}.mp4"
+        if max_clip_seconds and max_clip_seconds > 0:
+            final_video_path = output_dir / f"{bvid}_clip{max_clip_seconds}.mp4"
+        else:
+            final_video_path = output_dir / f"{bvid}.mp4"
 
         # If full video already downloaded and complete, reuse it immediately
         if (not max_clip_seconds or max_clip_seconds == 0) and final_video_path.exists():

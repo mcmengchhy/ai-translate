@@ -8,6 +8,12 @@ let pollInterval = null;
 document.addEventListener('DOMContentLoaded', () => {
     initVideoDubberEvents();
     initVoiceTunerControls();
+
+    // Guarantee default audio mode is cinema_10 (10% Background + Anti-Copyright Effect)
+    const audioModeSelect = document.getElementById('video-audio-mode');
+    if (audioModeSelect && (!audioModeSelect.value || audioModeSelect.value === 'constant_25')) {
+        audioModeSelect.value = 'cinema_10';
+    }
 });
 
 // ─────────────────────────────────────────────
