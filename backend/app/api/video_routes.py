@@ -5,7 +5,8 @@ import logging
 import shutil
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from ..video.pipeline import create_job, get_job_status, run_video_dubbing_pipeline, _save_job
@@ -385,3 +386,83 @@ async def rerender_dubbed_video(job_id: str, req: JobRerenderRequest):
         "segments": segments,
         "message": "Video successfully re-rendered with zero voice collisions!"
     }
+
+
+# =========================================================================
+# VIDEO SPLITTER & CLIP CUTTER ENDPOINTS
+# =========================================================================
+
+@router.post("/split-video")
+async def split_video_endpoint(
+    file: Optional[UploadFile] = File(None),
+    existing_filename: Optional[str] = Form(None),
+    clip_minutes: float = Form(30.0),
+):
+    """
+    Splits a multi-hour video into clips of exact duration (in minutes),
+    and packages them into a single downloadable .zip archive.
+    """
+    from ..video.splitter import split_video_by_minutes, SPLITS_DIR
+
+    target_video_path: Optional[Path] = None
+
+    if file and file.filename:
+        safe_name = Path(file.filename).name
+        target_video_path = STORAGE_UPLOADS / safe_name
+        with open(target_video_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer, length=1024 * 1024)
+    elif existing_filename:
+        cand1 = STORAGE_UPLOADS / existing_filename
+        cand2 = DUBBED_DIR / existing_filename
+        cand3 = Path(existing_filename)
+        if cand1.exists():
+            target_video_path = cand1
+        elif cand2.exists():
+            target_video_path = cand2
+        elif cand3.exists():
+            target_video_path = cand3
+        else:
+            raise HTTPException(status_code=404, detail=f"File not found: {existing_filename}")
+    else:
+        raise HTTPException(status_code=400, detail="No video file or existing filename provided")
+
+    if not target_video_path or not target_video_path.exists():
+        raise HTTPException(status_code=400, detail="Valid video file could not be resolved")
+
+    if clip_minutes <= 0:
+        clip_minutes = 30.0
+
+    try:
+        # Run splitting in worker thread to prevent event loop blocking
+        result = await asyncio.to_thread(
+            split_video_by_minutes,
+            video_path=str(target_video_path),
+            clip_minutes=float(clip_minutes),
+            output_dir=SPLITS_DIR,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error splitting video {target_video_path}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/download-split-zip")
+async def download_split_zip(zip_name: str = Query(...)):
+    """Downloads a generated .zip containing split video parts."""
+    from ..video.splitter import SPLITS_DIR
+
+    safe_name = Path(zip_name).name
+    zip_path = SPLITS_DIR / safe_name
+    if not zip_path.exists():
+        zip_path_alt = DUBBED_DIR / safe_name
+        if zip_path_alt.exists():
+            zip_path = zip_path_alt
+        else:
+            raise HTTPException(status_code=404, detail="ZIP archive not found")
+
+    return FileResponse(
+        path=str(zip_path),
+        filename=zip_path.name,
+        media_type="application/zip",
+    )
+

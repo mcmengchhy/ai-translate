@@ -41,9 +41,12 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 FRONTEND_DIR = ROOT_DIR / "frontend"
 DUBBED_DIR = ROOT_DIR / "storage" / "dubbed"
 DUBBED_DIR.mkdir(parents=True, exist_ok=True)
+SPLITS_DIR = ROOT_DIR / "storage" / "splits"
+SPLITS_DIR.mkdir(parents=True, exist_ok=True)
 
 if FRONTEND_DIR.exists():
     app.mount("/static/dubbed", StaticFiles(directory=str(DUBBED_DIR)), name="dubbed_media")
+    app.mount("/static/splits", StaticFiles(directory=str(SPLITS_DIR)), name="splits_media")
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
     @app.get("/")
