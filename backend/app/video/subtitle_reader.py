@@ -14,6 +14,32 @@ import cv2
 
 logger = logging.getLogger(__name__)
 
+WATERMARK_REGEX = re.compile(
+    r'(?:[0-9]+[kK]|超清|高清|1080[pP]|720[pP]|HD|UHD|蓝光|'
+    r'漫剧|剧集|短剧|全集|更新|第\s*\d+\s*集|'
+    r'关注|点赞|投币|收藏|公众号|抖音|快手|B站|bilibili|UP主|微信|\bVIP\b|'
+    r'出品|制作|翻译|压制|水印)',
+    re.IGNORECASE
+)
+
+def is_watermark_or_junk(text: str) -> bool:
+    if not text:
+        return True
+    t = text.strip()
+    if WATERMARK_REGEX.search(t):
+        return True
+    if re.match(r'^\d+$', t) or re.match(r'^[0-9\:\.\-\s]+$', t):
+        return True
+    return False
+
+def clean_dialogue_text(t: str) -> str:
+    if not t:
+        return ""
+    # Strip known watermark tags and trailing channel digits (e.g. '3473')
+    cleaned = WATERMARK_REGEX.sub("", t).strip()
+    cleaned = re.sub(r'\s*\d{3,}\s*$', '', cleaned).strip()
+    return cleaned
+
 # Cached RapidOCR singleton
 _OCR_ENGINE = None
 
@@ -240,18 +266,36 @@ def enhance_segments_with_hardsubs(
                 else:
                     res, _ = ocr(crop)
                     if res:
-                        valid_lines = [r[1].strip() for r in res if r[2] > 0.6 and len(r[1].strip()) > 0]
+                        crop_w = crop_right - crop_left
+                        valid_lines = []
+                        for r in res:
+                            box = r[0]
+                            line_text = r[1].strip()
+                            conf = r[2]
+                            if conf < 0.55 or not line_text:
+                                continue
+                            if is_watermark_or_junk(line_text):
+                                continue
+                            x_center = (box[0][0] + box[2][0]) / 2.0
+                            dist_from_center = abs(x_center - (crop_w / 2.0))
+                            # Exclude corner logos/channel overlays (>35% away from center)
+                            if dist_from_center > (crop_w * 0.35):
+                                continue
+                            cleaned_line = clean_dialogue_text(line_text)
+                            if cleaned_line:
+                                valid_lines.append(cleaned_line)
                         if valid_lines:
                             ocr_text = " ".join(valid_lines)
                     prev_crop_small = crop_small
                     prev_ocr_text = ocr_text
 
-            asr_text = seg.get("text", "")
+            asr_text = clean_dialogue_text(seg.get("text", ""))
             if ocr_text and len(ocr_text) >= 2:
                 seg["asr_text"] = asr_text
                 seg["text"] = ocr_text
                 seg["ocr_detected"] = True
             else:
+                seg["text"] = asr_text
                 seg["ocr_detected"] = False
 
             enhanced.append(seg)

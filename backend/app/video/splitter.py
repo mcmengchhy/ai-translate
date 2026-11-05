@@ -227,3 +227,4 @@ def split_video_by_minutes(
         "zip_download_url": f"/static/splits/{zip_filename}",
         "zip_size_mb": zip_size_mb,
     }
+

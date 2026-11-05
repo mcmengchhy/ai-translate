@@ -6,6 +6,7 @@ ensuring natural conversational flow, proper pronouns, and logical film dubbing 
 
 import json
 import logging
+import re
 import asyncio
 from typing import List, Dict, Any, Optional
 import httpx
@@ -50,10 +51,12 @@ STEP 1 ({source_lang} -> English Meaning & Reasoning):
 - Accurately interpret the contextual meaning, intent, sarcasm, emotion, and character relationships into natural English.
 - Resolve historical/wuxia/cultural terms correctly (e.g. '两' = taels of silver [តម្លឹង], '客官' = guest/customer, '掌柜' = innkeeper/boss, '元宝' = silver/gold ingot, '穿越' = transmigrate/time-travel to another world, '无敌' = invincible/unbeatable).
 - NEVER confuse homophones or translate idioms literally (e.g. '老妈我都多大了' -> 'Mom, I am an adult now!', '是你给我50两' -> 'You owe ME 50 taels of silver!').
+- STRICT FILTER: If the input text contains video watermarks, channel badges, or resolution labels (e.g. '4K', '超清', '漫剧', '3473', '全集', '关注'), COMPLETELY IGNORE them. Translate ONLY the actual spoken dialogue!
 
 STEP 2 (English -> Authentic Conversational Khmer Film Dubbing):
 - Translate the refined English intent into 100% natural, lively, and emotional Khmer dialogue (ភាសានិយាយក្នុងភាពយន្តខ្មែរ).
-- Use natural Cambodian pronouns (ខ្ញុំ, បង, អូន, ឯង, ម៉ាក់, ប៉ា, ថៅកែ, លោក) based on character hierarchy.
+- LIP-SYNC & BREVITY: The Khmer translation must be concise and punchy to match the character's speaking duration. Avoid overly verbose explanations so speech duration matches mouth movement!
+- Use natural Cambodian pronouns (ខ្ញុំ, បង, អូន, ឯង, ម៉ាក់, ប៉ា, ថៅកែ, លោក, ទូលបង្គំ, ព្រះអង្គ) based on character hierarchy.
 - Use natural spoken particles (ណា, ហ្នឹង, ទេ, ម៉ង, តើ, ម្ល៉េះ).
 - NEVER output Thai (e.g., นี่คือ, ตำลึง), Vietnamese, or robotic transliterations.
 - The "translation" field must contain ONLY pure spoken Khmer dialogue for voice actor dubbing. NEVER include original Chinese characters, pinyin, or explanatory parenthetical glosses like '(ផ្ទះសំណាក់)' or '(还有)'.
@@ -70,7 +73,11 @@ OUTPUT FORMAT: Return ONLY a valid JSON array:
 
     user_prompt = f"Dialogue scene to translate with 2-step English reasoning:\n{json.dumps(dialogue_payload, ensure_ascii=False, indent=2)}"
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{effective_model}:generateContent?key={effective_key}"
+    candidate_models = []
+    for m in [effective_model, "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]:
+        if m and m not in candidate_models:
+            candidate_models.append(m)
+
     payload = {
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
@@ -80,27 +87,40 @@ OUTPUT FORMAT: Return ONLY a valid JSON array:
         },
     }
 
+    last_err = None
     async with httpx.AsyncClient(timeout=45.0) as client:
-        resp = await client.post(url, json=payload)
-        if resp.status_code == 200:
-            data = resp.json()
-            raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-            parsed = json.loads(raw_text)
-            trans_map = {}
-            eng_map = {}
-            for item in parsed:
-                if "id" in item:
-                    trans_map[item["id"]] = item.get("translation", "")
-                    eng_map[item["id"]] = item.get("english_intent", "")
+        for cur_model in candidate_models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{cur_model}:generateContent?key={effective_key}"
+            try:
+                resp = await client.post(url, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    parsed = json.loads(raw_text)
+                    trans_map = {}
+                    eng_map = {}
+                    for item in parsed:
+                        if "id" in item:
+                            trans_map[item["id"]] = item.get("translation", "")
+                            eng_map[item["id"]] = item.get("english_intent", "")
 
-            for seg in segments:
-                if seg["id"] in trans_map:
-                    seg["translation"] = normalize_khmer_unicode(polish_khmer_dialogue(trans_map[seg["id"]]))
-                if seg["id"] in eng_map and eng_map[seg["id"]]:
-                    seg["english_intent"] = eng_map[seg["id"]]
-            return segments
-        else:
-            raise RuntimeError(f"Gemini API returned {resp.status_code}: {resp.text}")
+                    for seg in segments:
+                        if seg["id"] in trans_map:
+                            t_val = trans_map[seg["id"]]
+                            # Clean any leftover watermark remnants
+                            t_val = re.sub(r'(?:4k|超清|漫剧|\b3473\b|\b1080p\b|\b720p\b|រឿងកំប្លែង\s*4k|4k\s*រឿងកំប្លែង|ច្បាស់បំផុត\s*3473|4k\s*ultra)', '', t_val, flags=re.IGNORECASE).strip()
+                            seg["translation"] = normalize_khmer_unicode(polish_khmer_dialogue(t_val))
+                        if seg["id"] in eng_map and eng_map[seg["id"]]:
+                            seg["english_intent"] = eng_map[seg["id"]]
+                    return segments
+                else:
+                    logger.warning(f"Model {cur_model} returned {resp.status_code}. Trying next model...")
+                    last_err = f"Gemini API returned {resp.status_code}: {resp.text}"
+            except Exception as ex:
+                logger.warning(f"Model {cur_model} failed: {ex}. Trying next model...")
+                last_err = str(ex)
+
+        raise RuntimeError(f"All Gemini models failed. Last error: {last_err}")
 
 
 async def translate_dialogue_clusters_free(
@@ -180,6 +200,8 @@ async def translate_dialogue_clusters_free(
                     en_text = en_pieces[idx] if idx < len(en_pieces) and en_pieces[idx] else ""
 
                     if km_text and km_text != "...":
+                        # Clean any stray watermark words
+                        km_text = re.sub(r'(?:4k|超清|漫剧|\b3473\b|\b1080p\b|\b720p\b|រឿងកំប្លែង\s*4k|4k\s*រឿងកំប្លែង|ច្បាស់បំផុត\s*3473|4k\s*ultra)', '', km_text, flags=re.IGNORECASE).strip()
                         seg["translation"] = normalize_khmer_unicode(polish_khmer_dialogue(km_text))
                     if en_text and en_text != "...":
                         seg["english_intent"] = en_text

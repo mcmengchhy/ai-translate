@@ -126,16 +126,16 @@ def schedule_non_overlapping_clips(
         target_start = float(seg["target_start"])
         target_end = float(seg["target_end"])
 
-        # Determine available time window before next character speaks
+        # Available speech window: strictly finishes before the next character speaks
         if i + 1 < len(segments):
             next_seg = segments[i + 1]
             next_start = float(next_seg.get("target_start") or next_seg.get("orig_start") or next_seg.get("start", 0.0))
-            if next_start > target_start and (next_start - target_start) <= 4.0:
-                available_window = max(0.6, next_start - target_start - 0.04)
+            if next_start > target_start:
+                available_window = max(0.5, next_start - target_start - 0.04)
             else:
-                available_window = max(target_end - target_start + 0.6, 1.0)
+                available_window = max(target_end - target_start + 0.3, 0.8)
         else:
-            available_window = max(target_end - target_start + 0.6, 1.0)
+            available_window = max(target_end - target_start + 0.3, 0.8)
 
         # Lip-sync tempo fitting: if speech is longer than the visual window, fit it smoothly
         effective_audio_path = audio_file
@@ -143,13 +143,14 @@ def schedule_non_overlapping_clips(
 
         if raw_dur > available_window and temp_dir:
             speed = raw_dur / available_window
-            clamped_speed = min(max_speed, max(1.0, speed))
-            if clamped_speed >= 1.04:
+            clamped_speed = min(1.65, max(1.0, speed))
+            if clamped_speed >= 1.03:
                 fitted_path = temp_dir / f"fitted_lip_{seg['id']}_{clamped_speed:.2f}.wav"
                 try:
                     subprocess.run([
                         "ffmpeg", "-y", "-i", str(audio_file),
                         "-filter:a", f"atempo={clamped_speed:.3f}",
+                        "-t", f"{available_window:.3f}",
                         "-c:a", "pcm_s16le", "-ar", "48000", str(fitted_path)
                     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     effective_audio_path = str(fitted_path)
@@ -160,8 +161,8 @@ def schedule_non_overlapping_clips(
         # Mouth-Anchor: Always start at character's mouth movement
         effective_start = target_start
         if effective_start < current_end_time:
-            # Minor micro-adjustment if previous clip slightly overlapped
-            effective_start = round(current_end_time + 0.02, 2)
+            # Minor micro-adjustment if previous clip had millisecond boundary overlap
+            effective_start = round(current_end_time + 0.01, 2)
 
         valid_clips.append({
             "path": effective_audio_path,
@@ -170,7 +171,7 @@ def schedule_non_overlapping_clips(
             "seg_id": seg.get("id"),
         })
 
-        # Set playback and subtitle sync timestamps
+        # Set playback and subtitle sync timestamps: perfectly synchronized with character mouth and speech
         seg["start"] = round(effective_start, 2)
         seg["end"] = round(effective_start + actual_dur, 2)
 
