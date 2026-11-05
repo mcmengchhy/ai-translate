@@ -96,12 +96,16 @@ async def transcribe_video_audio(
             model = get_whisper_model("base")
             logger.info(f"Transcribing {duration:.1f}s ({duration/3600:.1f}h) audio with faster-whisper...")
 
+            # Using vad_filter=False to prevent Silero VAD from deleting dialogue over background music/shouts.
+            # condition_on_previous_text=False prevents Whisper hallucination loops during pauses.
+            # no_speech_threshold=0.6 filters pure non-speech background audio.
             segments_gen, info = model.transcribe(
                 audio_array,
                 language=language if language and language != "auto" else None,
                 beam_size=5,
-                vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=400),
+                vad_filter=False,
+                condition_on_previous_text=False,
+                no_speech_threshold=0.6,
             )
 
             segments_list = []

@@ -30,6 +30,12 @@ def is_watermark_or_junk(text: str) -> bool:
         return True
     if re.match(r'^\d+$', t) or re.match(r'^[0-9\:\.\-\s]+$', t):
         return True
+    # Standalone watermark abbreviations and short ASCII fragments (e.g. 'KT', 'Dili', 'bii', 'Sili', 'HD', 'VIP')
+    if re.match(r'^[A-Za-z\s\.\-_]{1,6}$', t, re.IGNORECASE):
+        return True
+    # Discard non-Chinese and non-Khmer short strings (< 4 chars)
+    if not re.search(r'[\u4e00-\u9fff\u1780-\u17ff]', t) and len(t) <= 4:
+        return True
     return False
 
 def clean_dialogue_text(t: str) -> str:
@@ -38,6 +44,9 @@ def clean_dialogue_text(t: str) -> str:
     # Strip known watermark tags and trailing channel digits (e.g. '3473')
     cleaned = WATERMARK_REGEX.sub("", t).strip()
     cleaned = re.sub(r'\s*\d{3,}\s*$', '', cleaned).strip()
+    # Strip leftover trailing/leading watermark abbreviations like 'bili', 'dili', 'bii', 'sili', 'sil', 'bif', 'kt'
+    cleaned = re.sub(r'(?:bili|dili|bii|sili|sil|bif|kt)\s*$', '', cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r'^\s*(?:bili|dili|bii|sili|sil|bif|kt)\s*', '', cleaned, flags=re.IGNORECASE).strip()
     return cleaned
 
 # Cached RapidOCR singleton
@@ -302,16 +311,85 @@ def enhance_segments_with_hardsubs(
             if progress_callback and (i % 15 == 0 or i == total_cues - 1):
                 progress_callback(i + 1, total_cues)
 
-        # Step 2: Merge adjacent speech segments that share the exact same subtitle line or fragments
+        # Step 2: Gap Scanner - Discover any on-screen subtitles that ASR may have dropped
+        gap_intervals = []
+        if enhanced and enhanced[0]["start"] > 2.0:
+            gap_intervals.append((0.5, enhanced[0]["start"] - 0.3))
+
+        for j in range(len(enhanced) - 1):
+            g_start = enhanced[j]["end"] + 0.3
+            g_end = enhanced[j + 1]["start"] - 0.3
+            if g_end - g_start >= 1.8:
+                gap_intervals.append((g_start, g_end))
+
+        # Check tail of video
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+        total_video_dur = frame_count / fps if fps > 0 and frame_count > 0 else 0
+        if enhanced and total_video_dur > 0 and (total_video_dur - enhanced[-1]["end"] >= 2.0):
+            gap_intervals.append((enhanced[-1]["end"] + 0.3, total_video_dur - 0.5))
+
+        if gap_intervals:
+            logger.info(f"Scanning {len(gap_intervals)} silence gaps for missing on-screen subtitles...")
+            recovered = []
+            for g_start, g_end in gap_intervals:
+                t = g_start
+                while t <= g_end:
+                    cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+                    ret, frame = cap.read()
+                    if not ret or frame is None:
+                        t += 1.2
+                        continue
+                    crop = frame[crop_top:crop_bottom, crop_left:crop_right]
+                    res, _ = ocr(crop)
+                    valid_lines = []
+                    if res:
+                        crop_w = crop_right - crop_left
+                        for r in res:
+                            box = r[0]
+                            text = r[1].strip()
+                            conf = r[2]
+                            if conf < 0.55 or not text or is_watermark_or_junk(text):
+                                continue
+                            x_center = (box[0][0] + box[2][0]) / 2.0
+                            if abs(x_center - (crop_w / 2.0)) > (crop_w * 0.35):
+                                continue
+                            cleaned = clean_dialogue_text(text)
+                            if cleaned and len(cleaned) >= 2 and not is_watermark_or_junk(cleaned):
+                                valid_lines.append(cleaned)
+                    if valid_lines:
+                        line_text = " ".join(valid_lines)
+                        if recovered and recovered[-1]["text"] == line_text and (t <= recovered[-1]["end"] + 1.8):
+                            recovered[-1]["end"] = round(t + 1.0, 2)
+                        else:
+                            recovered.append({
+                                "start": round(max(0.0, t - 0.2), 2),
+                                "end": round(t + 1.0, 2),
+                                "text": line_text,
+                                "ocr_detected": True,
+                                "source": "gap_hardsub_recovery"
+                            })
+                    t += 1.0
+
+            if recovered:
+                logger.info(f"Gap Scanner recovered {len(recovered)} missed subtitle dialogue segments!")
+                enhanced.extend(recovered)
+                enhanced.sort(key=lambda s: s["start"])
+
+        # Step 3: Merge adjacent speech segments that share the exact same subtitle line or fragments
         # (Combines broken speech fragments into complete, logical cinematic dialogue sentences)
         merged = []
         for seg in enhanced:
+            cur_text = seg.get("text", "").strip()
+            # Drop junk / watermark remnants / empty
+            if is_watermark_or_junk(cur_text) or len(cur_text) < 2:
+                continue
+
             if not merged:
                 merged.append(seg)
                 continue
 
             prev = merged[-1]
-            cur_text = seg.get("text", "").strip()
             prev_text = prev.get("text", "").strip()
 
             # Clean OCR artifacts (leading single letters like 'L ', 'I ', symbols)

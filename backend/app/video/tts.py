@@ -54,12 +54,24 @@ def _detect_prosody(
 ) -> Tuple[str, str, str]:
     """
     Auto-determines Edge-TTS prosody knobs from text content and timing.
-    Defaults to +10% speed for fluent, lively conversational Khmer speech matching video pacing.
+    Dynamically adjusts speaking rate based on segment duration and syllable count
+    so the Khmer speech naturally fits the character's mouth duration.
     """
     clean = text.strip()
 
     # Rate: Fluent, conversational pacing (+10% eliminates slow dragging)
     rate_pct = 10
+    syllables = _count_khmer_syllables(clean)
+
+    # Dynamic Lip-Sync Pacing:
+    # Khmer has ~4.0 syllables/sec at normal speed.
+    # If the visual mouth window (seg_duration) is tight, increase rate up to +28%
+    # so Edge-TTS synthesizes the voice fast enough naturally without clipping words!
+    if seg_duration and seg_duration > 0.3:
+        estimated_natural_dur = max(0.4, syllables / 4.0)
+        if estimated_natural_dur > seg_duration:
+            ratio = estimated_natural_dur / seg_duration
+            rate_pct = min(28, max(10, int((ratio - 1.0) * 70) + 10))
 
     # Pitch: Subtle emotion cues from punctuation
     pitch_hz = 0
@@ -73,7 +85,6 @@ def _detect_prosody(
         pitch_hz = +1   # very short utterance
 
     # Volume: short clips can sound quieter, boost slightly
-    syllables = _count_khmer_syllables(clean)
     volume_pct = +5 if syllables <= 5 else 0
 
     rate_str   = f"+{rate_pct}%" if rate_pct >= 0 else f"{rate_pct}%"

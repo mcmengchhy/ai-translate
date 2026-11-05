@@ -37,7 +37,12 @@ async def translate_dialogue_batch_gemini(
         raise ValueError("Gemini API key is required for AI Dialogue Dubbing.")
 
     dialogue_payload = [
-        {"id": seg["id"], "speaker": seg.get("speaker", "Speaker"), "text": seg.get("text", "")}
+        {
+            "id": seg["id"],
+            "speaker": seg.get("speaker", "Speaker"),
+            "text": seg.get("text", ""),
+            "duration_sec": round(max(0.6, float(seg.get("end", 0)) - float(seg.get("start", 0))), 1)
+        }
         for seg in segments if seg.get("text", "").strip()
     ]
     if not dialogue_payload:
@@ -51,11 +56,11 @@ STEP 1 ({source_lang} -> English Meaning & Reasoning):
 - Accurately interpret the contextual meaning, intent, sarcasm, emotion, and character relationships into natural English.
 - Resolve historical/wuxia/cultural terms correctly (e.g. '两' = taels of silver [តម្លឹង], '客官' = guest/customer, '掌柜' = innkeeper/boss, '元宝' = silver/gold ingot, '穿越' = transmigrate/time-travel to another world, '无敌' = invincible/unbeatable).
 - NEVER confuse homophones or translate idioms literally (e.g. '老妈我都多大了' -> 'Mom, I am an adult now!', '是你给我50两' -> 'You owe ME 50 taels of silver!').
-- STRICT FILTER: If the input text contains video watermarks, channel badges, or resolution labels (e.g. '4K', '超清', '漫剧', '3473', '全集', '关注'), COMPLETELY IGNORE them. Translate ONLY the actual spoken dialogue!
+- STRICT FILTER: If the input text contains video watermarks, channel badges, or resolution labels (e.g. '4K', '超清', '漫剧', '3473', '全集', '关注', 'bilibili'), COMPLETELY IGNORE them. Translate ONLY the actual spoken dialogue!
 
 STEP 2 (English -> Authentic Conversational Khmer Film Dubbing):
 - Translate the refined English intent into 100% natural, lively, and emotional Khmer dialogue (ភាសានិយាយក្នុងភាពយន្តខ្មែរ).
-- LIP-SYNC & BREVITY: The Khmer translation must be concise and punchy to match the character's speaking duration. Avoid overly verbose explanations so speech duration matches mouth movement!
+- LIP-SYNC & BREVITY: The Khmer translation must be concise and punchy to match the character's speaking duration (see duration_sec). Keep short lines brief and colloquial so speaking duration matches mouth movement without rushing!
 - Use natural Cambodian pronouns (ខ្ញុំ, បង, អូន, ឯង, ម៉ាក់, ប៉ា, ថៅកែ, លោក, ទូលបង្គំ, ព្រះអង្គ) based on character hierarchy.
 - Use natural spoken particles (ណា, ហ្នឹង, ទេ, ម៉ង, តើ, ម្ល៉េះ).
 - NEVER output Thai (e.g., นี่คือ, ตำลึง), Vietnamese, or robotic transliterations.
@@ -74,7 +79,7 @@ OUTPUT FORMAT: Return ONLY a valid JSON array:
     user_prompt = f"Dialogue scene to translate with 2-step English reasoning:\n{json.dumps(dialogue_payload, ensure_ascii=False, indent=2)}"
 
     candidate_models = []
-    for m in [effective_model, "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]:
+    for m in [effective_model, "gemini-flash-latest", "gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash-lite", "gemini-2.5-flash"]:
         if m and m not in candidate_models:
             candidate_models.append(m)
 

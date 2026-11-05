@@ -131,26 +131,25 @@ def schedule_non_overlapping_clips(
             next_seg = segments[i + 1]
             next_start = float(next_seg.get("target_start") or next_seg.get("orig_start") or next_seg.get("start", 0.0))
             if next_start > target_start:
-                available_window = max(0.5, next_start - target_start - 0.04)
+                available_window = max(0.4, next_start - target_start - 0.03)
             else:
-                available_window = max(target_end - target_start + 0.3, 0.8)
+                available_window = max(target_end - target_start + 0.3, 0.6)
         else:
-            available_window = max(target_end - target_start + 0.3, 0.8)
+            available_window = max(target_end - target_start + 0.3, 0.6)
 
-        # Lip-sync tempo fitting: if speech is longer than the visual window, fit it smoothly
+        # Lip-sync tempo fitting: if speech is longer than the visual window, fit it smoothly without truncating words
         effective_audio_path = audio_file
         actual_dur = raw_dur
 
         if raw_dur > available_window and temp_dir:
             speed = raw_dur / available_window
-            clamped_speed = min(1.65, max(1.0, speed))
+            clamped_speed = min(1.70, max(1.0, speed))
             if clamped_speed >= 1.03:
                 fitted_path = temp_dir / f"fitted_lip_{seg['id']}_{clamped_speed:.2f}.wav"
                 try:
                     subprocess.run([
                         "ffmpeg", "-y", "-i", str(audio_file),
                         "-filter:a", f"atempo={clamped_speed:.3f}",
-                        "-t", f"{available_window:.3f}",
                         "-c:a", "pcm_s16le", "-ar", "48000", str(fitted_path)
                     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     effective_audio_path = str(fitted_path)
