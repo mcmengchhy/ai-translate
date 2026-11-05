@@ -80,7 +80,7 @@ async def run_video_dubbing_pipeline(
     engine_name: str = "auto",
     audio_mode: str = "replace",
     burn_subtitles: bool = False,
-    max_duration: Optional[int] = 90,
+    max_duration: Optional[int] = 0,
     api_key: Optional[str] = None,
     subtitle_file_path: Optional[str] = None,
     voice_rate: str = "auto",
@@ -110,6 +110,32 @@ async def run_video_dubbing_pipeline(
             video_path = video_source
             job["title"] = Path(video_path).stem
             job["platform"] = "Uploaded File"
+
+            # ⚡ Support Quick Test (e.g. 90s / 1:30 min) on uploaded local files as well
+            if max_duration and max_duration > 0:
+                from .dubber import get_media_duration
+                total_local_dur = get_media_duration(str(video_source))
+                if total_local_dur > (max_duration + 5):
+                    clipped_file = Path(video_source).parent / f"test_{max_duration}s_{Path(video_source).name}"
+                    logger.info(f"⚡ 1:30 Quick Test: Clipping local video ({total_local_dur:.1f}s) to first {max_duration}s for fast test...")
+                    import subprocess
+                    clip_cmd = [
+                        "ffmpeg", "-y",
+                        "-ss", "00:00:00",
+                        "-i", str(video_source),
+                        "-t", str(max_duration),
+                        "-c", "copy",
+                        "-avoid_negative_ts", "make_zero",
+                        "-movflags", "+faststart",
+                        str(clipped_file),
+                    ]
+                    try:
+                        subprocess.run(clip_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        if clipped_file.exists() and clipped_file.stat().st_size > 0:
+                            video_path = str(clipped_file)
+                            logger.info(f"⚡ Clipped test video generated: {clipped_file.name}")
+                    except Exception as e:
+                        logger.warning(f"Could not stream-copy clip local video: {e}. Processing full file.")
 
         job["video_path"] = str(video_path)
         job["progress"] = 25

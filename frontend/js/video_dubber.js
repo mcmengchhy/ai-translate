@@ -268,6 +268,7 @@ async function handleFileDubbing() {
     const tone = document.getElementById('video-tone-select').value;
     const audioMode = document.getElementById('video-audio-mode').value;
     const burnSubtitles = document.getElementById('burn-subs-checkbox').checked;
+    const maxDur = parseInt(document.getElementById('video-duration-select')?.value ?? '0', 10);
     const settings = getSavedSettings();
     const tuner = getVoiceTunerValues();
 
@@ -281,6 +282,7 @@ async function handleFileDubbing() {
     formData.append('tone', tone);
     formData.append('audio_mode', audioMode);
     formData.append('burn_subtitles', burnSubtitles ? 'true' : 'false');
+    formData.append('max_duration', maxDur);
     formData.append('voice_rate', tuner.rate);
     formData.append('voice_pitch', tuner.pitch);
     formData.append('voice_volume', tuner.volume);
