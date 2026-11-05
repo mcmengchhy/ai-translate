@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 
 from .api.routes import router as api_router
 from .api.video_routes import router as video_router
+from .api.bilibili_routes import router as bilibili_router
 from .core import config
 
 logging.basicConfig(
@@ -35,6 +36,7 @@ app.add_middleware(
 # Include API Routers
 app.include_router(api_router)
 app.include_router(video_router)
+app.include_router(bilibili_router)
 
 # Mount frontend static directory & media directories
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent

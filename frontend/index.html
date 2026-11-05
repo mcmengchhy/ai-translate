@@ -52,6 +52,13 @@
                 </button>
             </div>
 
+            <!-- Bilibili Fast Speed / Account Button -->
+            <button class="bilibili-nav-btn" id="nav-bilibili-btn" onclick="openBilibiliModal()" title="Bilibili Account & Fast Download Speed">
+                <i class="ph ph-television"></i>
+                <span class="bilibili-dot" id="nav-bilibili-dot"></span>
+                <span id="nav-bilibili-text">Bilibili Login</span>
+            </button>
+
             <!-- Engine & Settings Buttons -->
             <div class="engine-badge" id="engine-badge" title="Active Engine">
                 <span class="status-indicator active"></span>
@@ -96,9 +103,13 @@
                                 </div>
                             </div>
                             <select id="video-voice-select" class="styled-select">
-                                <option value="multi" selected>🎭 Auto Multi-Voice (Characters Match 👨 Male / 👩 Female)</option>
-                                <option value="male">👨 Piseth (Male Neural) - Friendly & Clear</option>
-                                <option value="female">👩 Sreymom (Female Neural) - Warm & Expressive</option>
+                                <option value="multi" selected>🎭 Auto Multi-Cast (2-4 Characters: Hero, Father, Boy, Heroine, Girl, Mother)</option>
+                                <option value="male">👨 ពិសិដ្ឋ / Piseth (Lead Hero) - Natural & Clear</option>
+                                <option value="male_deep">🧔 លោកពុក / Mature Father / Authority (-10Hz) - Deep & Warm</option>
+                                <option value="male_young">👦 យុវជន / Energetic Youth / Boy (+10Hz) - Lively & Bright</option>
+                                <option value="female">👩 ស្រីមុំ / Sreymom (Lead Heroine) - Warm & Expressive</option>
+                                <option value="female_sweet">👧 នារីផ្អែមល្ហែម / Sweet Young Girl (+10Hz) - Soft & Bright</option>
+                                <option value="female_elder">👵 អ្នកម្តាយ / Mature Mother / Elder (-7Hz) - Resilient & Warm</option>
                             </select>
                         </div>
 
@@ -107,8 +118,8 @@
                                 <label><i class="ph ph-sliders"></i> Audio Mixing Mode</label>
                             </div>
                             <select id="video-audio-mode" class="styled-select">
-                                <option value="cinema_3" selected>🔉 3% Background + Anti-Copyright Effect (Default)</option>
-                                <option value="replace">🔇 100% Pure Studio Voiceover (Zero noise / foreign sound)</option>
+                                <option value="replace" selected>🔇 100% Remove Original Sound (Zero Foreign Audio / Zero Copyright)</option>
+                                <option value="cinema_3">🔉 3% Background + Anti-Copyright Effect (Subtle SFX)</option>
                                 <option value="smart_cinema">🎚️ Smooth Cinema Blend (Gentle Background, Ducking)</option>
                                 <option value="constant_25">🔊 25% Background (Higher Music/SFX)</option>
                             </select>
@@ -142,12 +153,45 @@
                             </select>
                         </div>
 
-                        <div class="config-col checkbox-col">
-                            <label class="checkbox-label" title="Permanently render Khmer subtitles onto the video frames">
-                                <input type="checkbox" id="burn-subs-checkbox">
-                                <span>Burn Subtitles into Video</span>
-                            </label>
+                        <div class="config-col">
+                            <div class="config-col-header">
+                                <label><i class="ph ph-scissors"></i> Split Output (កាត់ជាវគ្គ)</label>
+                            </div>
+                            <select id="video-split-duration" class="styled-select">
+                                <option value="1800" selected>✂️ 30 Mins / Part (1800s) [Recom. លំនាំដើម]</option>
+                                <option value="900">✂️ 15 Mins / Part (900s) [Reels / TikTok]</option>
+                                <option value="2700">✂️ 45 Mins / Part (2700s) [TV Episode]</option>
+                                <option value="3600">✂️ 1 Hour / Part (3600s) [YouTube]</option>
+                                <option value="0">🎬 Single Video (វីដេអូពេញមួយ - មិនកាត់)</option>
+                            </select>
                         </div>
+                    </div>
+
+                    <!-- Video & Copyright Protection Toolbar -->
+                    <div class="video-shield-row" style="display: flex; flex-wrap: wrap; gap: 16px; align-items: center; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); padding: 10px 16px; border-radius: 10px; margin-top: 14px;">
+                        <span style="font-size: 0.85rem; font-weight: 600; color: #94a3b8; display: flex; align-items: center; gap: 6px;">
+                            <i class="ph ph-shield-check" style="color: #10b981;"></i> Video Shield & Subtitle Controls:
+                        </span>
+                        <label class="checkbox-label" title="Completely remove original video sound so there is zero foreign audio or copyright impact" style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; cursor: pointer;">
+                            <input type="checkbox" id="remove-origin-sound-checkbox" checked>
+                            <span style="color: #f8fafc; font-weight: 600;">🔇 Remove Original Sound (លុបសំឡេងដើមទាំងស្រុង)</span>
+                        </label>
+                        <label class="checkbox-label" title="Covers original hardcoded Chinese subtitles with a sleek dark banner" style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; cursor: pointer;">
+                            <input type="checkbox" id="mask-hardsubs-checkbox" checked>
+                            <span style="color: #f8fafc;">⬛ Cover Chinese Hardsubs (បិទបាំងអក្សរចិន)</span>
+                        </label>
+                        <label class="checkbox-label" title="1.03x smart crop/zoom and subtle color grade to strip edge logos and evade automated Content ID" style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; cursor: pointer;">
+                            <input type="checkbox" id="anti-copyright-video-checkbox" checked>
+                            <span style="color: #f8fafc;">🛡️ Anti-Copyright Shield (1.03x Zoom + Master EQ)</span>
+                        </label>
+                        <label class="checkbox-label" title="Flip video horizontally (Mirror) for extra copyright protection" style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; cursor: pointer;">
+                            <input type="checkbox" id="mirror-video-checkbox">
+                            <span style="color: #cbd5e1;">🪞 Mirror Video (ត្រឡប់ឆ្វេង-ស្តាំ)</span>
+                        </label>
+                        <label class="checkbox-label" title="Permanently burns Khmer subtitles directly into the video frames over the dark mask" style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; cursor: pointer;">
+                            <input type="checkbox" id="burn-subs-checkbox">
+                            <span style="color: #cbd5e1;">🔥 Burn Subtitles into Video (បង្កប់អក្សរខ្មែរ)</span>
+                        </label>
                     </div>
 
                     <!-- Expandable Voice Tuner Drawer -->
@@ -244,6 +288,9 @@
                                 <button type="button" class="btn-ghost btn-sm" onclick="fillBilibiliSample()" title="Fill sample Bilibili video">
                                     <i class="ph ph-television" style="color: #00a1d6; font-size: 15px;"></i> Bilibili BV1Foa16yEAh
                                 </button>
+                                <button type="button" class="btn-ghost btn-sm" id="bilibili-login-badge-btn" onclick="openBilibiliModal()" title="Login to Bilibili for high speed downloads & 1080P" style="border-color: rgba(0, 161, 214, 0.4); color: #38bdf8;">
+                                    <i class="ph ph-lightning" style="color: #fbbf24; font-size: 15px;"></i> <span id="bilibili-badge-label">⚡ Bilibili Login (Fast Speed)</span>
+                                </button>
                                 <button type="button" class="btn-ghost btn-sm" onclick="loadCompletedDemoJob('bea1cc9b')" title="Watch rendered result for BV1Foa16yEAh" style="border-color: rgba(168, 85, 247, 0.4); color: #c084fc;">
                                     <i class="ph ph-play-circle" style="color: #a855f7; font-size: 15px;"></i> Play Demo
                                 </button>
@@ -252,7 +299,7 @@
                             <!-- Supported Platforms Badges -->
                             <div class="supported-platforms-bar">
                                 <span class="platform-badge" title="YouTube & Shorts"><i class="ph ph-youtube-logo" style="color: #ef4444;"></i> YouTube</span>
-                                <span class="platform-badge" title="Bilibili"><i class="ph ph-television" style="color: #00a1d6;"></i> Bilibili</span>
+                                <span class="platform-badge" id="badge-bilibili" onclick="openBilibiliModal()" style="cursor: pointer;" title="Manage Bilibili Login for faster download speeds"><i class="ph ph-television" style="color: #00a1d6;"></i> Bilibili <span id="bilibili-inline-status" style="font-size: 11px; margin-left: 4px; color: #fbbf24;">⚡ Login for Speed</span></span>
                                 <span class="platform-badge" title="TikTok & Douyin"><i class="ph ph-tiktok-logo" style="color: #22d3ee;"></i> TikTok</span>
                                 <span class="platform-badge" title="Facebook Videos & Reels"><i class="ph ph-facebook-logo" style="color: #3b82f6;"></i> Facebook</span>
                                 <span class="platform-badge" title="X / Twitter"><i class="ph ph-x-logo" style="color: #e2e8f0;"></i> X</span>
@@ -300,17 +347,43 @@
                     </div>
                 </div>
 
+                <!-- Recent Jobs Bar (Quick Resume Past or Paused Work) -->
+                <div class="recent-jobs-bar" id="recent-jobs-bar" style="margin-top: 12px; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: 8px; font-size: 13px;">
+                    <div style="display: flex; align-items: center; gap: 8px; color: var(--text-muted); flex: 1; flex-wrap: wrap;">
+                        <i class="ph ph-clock-counter-clockwise" style="color: var(--accent-cyan); font-size: 16px;"></i>
+                        <span style="font-weight: 500;">Previous Video Jobs:</span>
+                        <select id="recent-jobs-select" class="styled-select select-xs" style="max-width: 380px;" onchange="onSelectRecentJob(this.value)">
+                            <option value="">-- Select a past or pending job --</option>
+                        </select>
+                        <button type="button" class="btn-primary btn-xs" id="btn-quick-resume" style="display: none; background: #10b981; border-color: #10b981;" onclick="resumeSelectedRecentJob()">
+                            <i class="ph ph-play"></i> Resume Job
+                        </button>
+                        <button type="button" class="btn-secondary btn-xs" id="btn-quick-cancel" style="display: none; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: #ef4444; font-weight: 500;" onclick="cancelCurrentJob()" title="Cancel active job">
+                            <i class="ph ph-x-circle"></i> Cancel
+                        </button>
+                    </div>
+                    <button type="button" class="btn-secondary btn-xs" onclick="loadRecentJobsList()" title="Refresh recent jobs">
+                        <i class="ph ph-arrows-clockwise"></i> Refresh
+                    </button>
+                </div>
+
                 <!-- Live Pipeline Progress Card (Appears when job starts) -->
                 <div class="pipeline-progress-card" id="video-pipeline-card" style="display: none;">
                     <div class="pipeline-header">
                         <div class="pipeline-info">
-                            <span class="pulsing-dot"></span>
+                            <span class="pulsing-dot" id="pipeline-pulsing-dot"></span>
                             <div>
                                 <h4 id="pipeline-job-title">Processing Video...</h4>
                                 <span class="pipeline-stage" id="pipeline-stage-text">Initializing pipeline</span>
                             </div>
                         </div>
-                        <span class="pipeline-percent" id="pipeline-percent-text">10%</span>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <button type="button" class="btn-secondary btn-xs" id="btn-cancel-pipeline" onclick="cancelCurrentJob()" title="Cancel active dubbing process" style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: #ef4444; font-weight: 600; padding: 5px 12px; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; transition: all 0.2s ease;">
+                                <i class="ph ph-x-circle" style="font-size: 15px;"></i>
+                                <span>Cancel Process</span>
+                            </button>
+                            <span class="pipeline-percent" id="pipeline-percent-text">10%</span>
+                        </div>
                     </div>
 
                     <!-- Live Metrics Strip (Speed, ETA, Details) -->
@@ -353,6 +426,96 @@
                             <span>5. Audio Ducking</span>
                         </div>
                     </div>
+
+                    <!-- Pipeline Error & Resume Action Banner -->
+                    <div id="pipeline-error-box" style="display: none; margin-top: 14px; padding: 12px 16px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 8px;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <i class="ph ph-warning-circle" style="font-size: 22px; color: #ef4444;"></i>
+                                <div>
+                                    <div id="pipeline-error-title" style="font-weight: 600; color: #ef4444; font-size: 13px;">Pipeline Paused / Interrupted</div>
+                                    <div id="pipeline-error-msg" style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Cues and synthesized audio are saved. You can resume safely.</div>
+                                </div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                                <button type="button" class="btn-primary btn-sm" id="btn-resume-pipeline" onclick="resumeCurrentJob()" style="background: #10b981; border-color: #10b981; display: inline-flex; align-items: center; gap: 6px;">
+                                    <i class="ph ph-play"></i> Resume Job (បន្តពីកន្លែងចាស់)
+                                </button>
+                                <button type="button" class="btn-secondary btn-sm" id="btn-dismiss-pipeline" onclick="dismissCurrentJob()" style="display: inline-flex; align-items: center; gap: 4px;" title="Dismiss & Return to Clean Form">
+                                    <i class="ph ph-x"></i> Dismiss (បិទ)
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Episodic Multi-Part Studio (Displays 30-min episodes in real time with individual & batch download) -->
+                <div class="episodic-episodes-card" id="episodic-episodes-card" style="display: none; margin-top: 16px; background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 18px 20px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <i class="ph ph-film-strip" style="color: var(--accent-cyan); font-size: 24px;"></i>
+                            <div>
+                                <h4 style="margin: 0; font-size: 15px; font-weight: 600;">30-Minute Episodes (វគ្គៗ ៣០ នាទី)</h4>
+                                <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+                                    <span id="episodic-summary-text">Ready to download part by part as each finishes</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                            <button type="button" class="btn-primary btn-sm" id="btn-merge-selected-episodes" onclick="mergeSelectedEpisodes()" style="display: none; background: #10b981; border-color: #10b981; font-weight: 600; box-shadow: 0 0 16px rgba(16, 185, 129, 0.35);">
+                                <i class="ph ph-intersect"></i> Merge Selected into 1 Clip (បញ្ចូលគ្នា)
+                            </button>
+                            <button type="button" class="btn-secondary btn-sm" id="btn-download-all-zip" onclick="downloadAllEpisodesZip()" style="display: none;">
+                                <i class="ph ph-package"></i> Download (.ZIP)
+                            </button>
+                            <button type="button" class="btn-secondary btn-sm" onclick="fetchEpisodicProgress()" title="Refresh episodes">
+                                <i class="ph ph-arrows-clockwise"></i> Refresh
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Batch Selection Strip -->
+                    <div id="episodic-batch-select-strip" style="display: none; align-items: center; justify-content: space-between; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 8px 14px; margin-bottom: 14px; font-size: 13px; flex-wrap: wrap; gap: 8px;">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <label style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 500; color: var(--text-primary); margin: 0;">
+                                <input type="checkbox" id="checkbox-select-all-episodes" onchange="toggleSelectAllEpisodes(this.checked)" style="cursor: pointer; width: 16px; height: 16px; accent-color: var(--accent-cyan);">
+                                Select All Ready Parts
+                            </label>
+                            <span id="selected-episodes-label" style="color: var(--accent-cyan); font-weight: 600;">0 parts selected</span>
+                        </div>
+                        <div style="font-size: 12px; color: var(--text-muted);">
+                            💡 ជ្រើសរើសវគ្គ (ឧទាហរណ៍ 1 ដល់ 3) រួចចុច <b>"Merge Selected into 1 Clip"</b> ដើម្បីបញ្ចូលគ្នាជាវីដេអូតែមួយ!
+                        </div>
+                    </div>
+
+                    <!-- Merged Video Result Banner (Appears when merge completes) -->
+                    <div id="episodic-merged-banner" style="display: none; background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                            <div style="display: flex; align-items: center; gap: 12px;">
+                                <i class="ph ph-check-circle" style="font-size: 26px; color: #10b981;"></i>
+                                <div>
+                                    <div style="font-weight: 600; color: #10b981; font-size: 14px;" id="merged-result-title">🎉 Successfully Merged into 1 Continuous Video!</div>
+                                    <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;" id="merged-result-meta">Duration: 01:30:00 • Size: 1.2 GB • Aligned Khmer subtitles attached</div>
+                                </div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                                <a id="btn-download-merged-mp4" href="#" download class="btn-primary btn-sm" style="background: #10b981; border-color: #10b981; text-decoration: none;">
+                                    <i class="ph ph-download-simple"></i> Download Merged MP4
+                                </a>
+                                <a id="btn-download-merged-srt" href="#" download class="btn-secondary btn-sm" style="text-decoration: none;">
+                                    <i class="ph ph-subtitles"></i> Merged SRT
+                                </a>
+                                <button type="button" class="btn-secondary btn-sm" id="btn-play-merged-video" onclick="playMergedVideoNow()">
+                                    <i class="ph ph-play"></i> Play
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Episode Cards Grid -->
+                    <div id="episodic-cards-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px;">
+                        <!-- Dynamically rendered by video_dubber.js -->
+                    </div>
                 </div>
 
                 <!-- Results & CapCut-Style Dubbing Studio (Appears when completed) -->
@@ -372,8 +535,8 @@
                             <div class="studio-control-group">
                                 <label for="studio-bg-volume"><i class="ph ph-speaker-high"></i> Background Sound:</label>
                                 <select id="studio-bg-volume" class="styled-select select-xs" onchange="markStudioDirty()">
-                                    <option value="0.03" selected>🔉 3% Background + Anti-Copyright Effect (Default)</option>
-                                    <option value="0.0">🔇 100% Pure Studio Voice (Zero Foreign Sound)</option>
+                                    <option value="0.0" selected>🔇 100% Remove Original Sound (Zero Foreign Audio / Zero Copyright)</option>
+                                    <option value="0.03">🔉 3% Background + Anti-Copyright Effect (Subtle SFX)</option>
                                     <option value="-1">🎚️ Smooth Cinema Blend (Gentle Background, Ducking)</option>
                                     <option value="0.25">🔊 Balanced Background (25%)</option>
                                     <option value="0.40">📢 Loud Background (40%)</option>
@@ -408,6 +571,11 @@
                             <!-- Re-Render & Export Video -->
                             <button type="button" class="btn-primary btn-sm" id="btn-studio-rerender" onclick="studioRerenderVideo()" title="Re-mix audio and render video with your edits">
                                 <i class="ph ph-film-strip"></i> Re-Render Video
+                            </button>
+
+                            <!-- Split Video into 1h Parts -->
+                            <button type="button" class="btn-secondary btn-sm" id="btn-studio-split" onclick="openStudioSplitModal()" title="Split video into 1-hour parts / episodes">
+                                <i class="ph ph-scissors" style="color: var(--accent-cyan);"></i> Split 1h Parts (កាត់ជាវគ្គ)
                             </button>
                         </div>
                     </div>
@@ -466,6 +634,23 @@
                             </div>
                         </div>
 
+                    </div>
+
+                    <!-- Episode Parts Card (Appears when video is split into 1h parts) -->
+                    <div class="video-parts-card" id="video-parts-card" style="display: none; margin-top: 20px; background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 16px 20px;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 10px; flex-wrap: wrap; gap: 8px;">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <i class="ph ph-scissors" style="color: var(--accent-cyan); font-size: 20px;"></i>
+                                <h4 style="margin: 0; font-size: 15px; font-weight: 600;">Episode Parts (កាត់ជាវគ្គៗ - 1 Hour Each)</h4>
+                                <span class="badge-count" id="video-parts-count" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8;">0 Parts</span>
+                            </div>
+                            <button type="button" class="btn-secondary btn-xs" onclick="openStudioSplitModal()">
+                                <i class="ph ph-sliders"></i> Re-Split Length
+                            </button>
+                        </div>
+                        <div id="video-parts-list" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px;">
+                            <!-- Dynamically populated parts cards -->
+                        </div>
                     </div>
                 </div>
 
@@ -836,11 +1021,237 @@
         </div>
     </div>
 
+    <!-- Bilibili Login & Fast Download Modal -->
+    <div class="modal-backdrop" id="bilibili-modal" style="display: none;">
+        <div class="modal-card bilibili-modal-card">
+            <div class="modal-header">
+                <div class="bilibili-header-title">
+                    <div class="bilibili-icon-box">
+                        <i class="ph ph-television"></i>
+                    </div>
+                    <div>
+                        <h3 style="margin: 0; font-size: 17px;">Bilibili High-Speed Download</h3>
+                        <p class="modal-subtitle">Login to unlock unthrottled CDN speeds (10-50 MB/s) and 1080P/HD quality</p>
+                    </div>
+                </div>
+                <button class="icon-button" onclick="closeBilibiliModal()" title="Close"><i class="ph ph-x"></i></button>
+            </div>
+
+            <div class="modal-body">
+                <!-- State 1: Active Logged In View -->
+                <div id="bilibili-logged-in-view" style="display: none;">
+                    <div class="bilibili-user-card">
+                        <div class="bilibili-avatar-wrap">
+                            <img id="bilibili-user-avatar" src="https://static.hdslb.com/images/akari.jpg" alt="Avatar" class="bilibili-avatar">
+                            <span class="bilibili-vip-badge" id="bilibili-user-vip-badge">VIP</span>
+                        </div>
+                        <div class="bilibili-user-meta">
+                            <div class="bilibili-user-name-row">
+                                <h4 id="bilibili-user-name">User</h4>
+                                <span class="bilibili-level-tag" id="bilibili-user-level">Lv 6</span>
+                            </div>
+                            <div class="bilibili-user-id" id="bilibili-user-mid">UID: --</div>
+                            <div class="bilibili-speed-status">
+                                <span class="status-pulse-dot"></span>
+                                <span class="status-text">⚡ High-Speed Direct CDN & 1080P Active</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bilibili-perks-box">
+                        <div class="perk-item">
+                            <i class="ph ph-lightning-fill perk-icon gold"></i>
+                            <div>
+                                <strong>Uncapped CDN Bandwidth</strong>
+                                <span>Streams and multi-fragment downloads at full connection speed (10-50 MB/s).</span>
+                            </div>
+                        </div>
+                        <div class="perk-item">
+                            <i class="ph ph-film-slate perk-icon blue"></i>
+                            <div>
+                                <strong>Full 1080P / HD Access</strong>
+                                <span>Bypasses guest 360P cap for crystal clear translation and dubbing.</span>
+                            </div>
+                        </div>
+                        <div class="perk-item">
+                            <i class="ph ph-shield-check perk-icon green"></i>
+                            <div>
+                                <strong>Anti-Sever Protection</strong>
+                                <span>Prevents Bilibili guest socket drops on videos longer than 30 minutes.</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bilibili-actions-row">
+                        <button type="button" class="btn-secondary" onclick="refreshBilibiliStatus()">
+                            <i class="ph ph-arrows-clockwise"></i> Refresh Status
+                        </button>
+                        <button type="button" class="btn-ghost" style="color: #ef4444;" onclick="logoutBilibili()">
+                            <i class="ph ph-sign-out"></i> Logout
+                        </button>
+                    </div>
+                </div>
+
+                <!-- State 2: Login Tabs View -->
+                <div id="bilibili-login-view">
+                    <!-- Login Method Switcher -->
+                    <div class="bilibili-tab-nav">
+                        <button type="button" class="bili-tab-btn active" id="bili-tab-qr-btn" onclick="switchBiliTab('qr')">
+                            <i class="ph ph-qr-code"></i> Scan QR Code
+                        </button>
+                        <button type="button" class="bili-tab-btn" id="bili-tab-manual-btn" onclick="switchBiliTab('manual')">
+                            <i class="ph ph-cookie"></i> Manual SESSDATA
+                        </button>
+                        <button type="button" class="bili-tab-btn" id="bili-tab-browser-btn" onclick="switchBiliTab('browser')">
+                            <i class="ph ph-browsers"></i> Browser Import
+                        </button>
+                    </div>
+
+                    <!-- Tab Pane 1: QR Code Scan -->
+                    <div class="bili-tab-content active" id="bili-pane-qr">
+                        <div class="qr-scan-card">
+                            <div class="qr-container-box">
+                                <div id="bilibili-qr-container" class="bili-qr-display">
+                                    <div class="qr-loading-spinner">
+                                        <i class="ph ph-spinner ph-spin"></i>
+                                        <span>Generating QR...</span>
+                                    </div>
+                                </div>
+                                <div class="qr-status-indicator" id="bilibili-qr-status">
+                                    <span class="qr-status-dot"></span>
+                                    <span id="bilibili-qr-status-text">Generating Bilibili QR code...</span>
+                                </div>
+                            </div>
+
+                            <div class="qr-instructions">
+                                <ol>
+                                    <li>Open the <strong>Bilibili App</strong> on your mobile phone</li>
+                                    <li>Tap the <strong>Scan</strong> icon (<i class="ph ph-scan"></i>) in top-right</li>
+                                    <li>Scan this QR code and tap <strong>Confirm Login</strong></li>
+                                </ol>
+                                <p class="qr-tip"><i class="ph ph-shield-check"></i> Safe & official Bilibili passport API. Session cookies stay local in <code>storage/</code>.</p>
+                                <button type="button" class="btn-ghost btn-sm" onclick="generateNewBilibiliQR()" style="margin-top: 10px;">
+                                    <i class="ph ph-arrows-clockwise"></i> Refresh QR Code
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tab Pane 2: Manual SESSDATA / Cookie -->
+                    <div class="bili-tab-content" id="bili-pane-manual" style="display: none;">
+                        <div class="form-group" style="margin-top: 12px;">
+                            <label for="bilibili-manual-input">
+                                Bilibili Cookie or SESSDATA
+                                <span class="label-badge">Direct Paste</span>
+                            </label>
+                            <textarea 
+                                id="bilibili-manual-input" 
+                                rows="4" 
+                                class="styled-textarea" 
+                                style="font-family: var(--font-mono); font-size: 12px;"
+                                placeholder="Paste your SESSDATA token (e.g. 7a3b4c90...) or full cookie string (SESSDATA=...; bili_jct=...)"
+                            ></textarea>
+                            <small style="color: var(--text-muted); display: block; margin-top: 6px;">
+                                💡 How to find: Open <a href="https://www.bilibili.com" target="_blank" rel="noreferrer" style="color: #00a1d6;">bilibili.com</a> &rarr; Press F12 (DevTools) &rarr; Application &rarr; Cookies &rarr; Copy <strong>SESSDATA</strong> value.
+                            </small>
+                        </div>
+                        <button type="button" class="btn-primary btn-block" onclick="saveManualBilibiliCookie()">
+                            <i class="ph ph-check-circle"></i> Verify & Save Cookies
+                        </button>
+                    </div>
+
+                    <!-- Tab Pane 3: Browser Auto-Import -->
+                    <div class="bili-tab-content" id="bili-pane-browser" style="display: none;">
+                        <p style="color: var(--text-secondary); font-size: 13px; margin: 12px 0 16px;">
+                            Extract Bilibili cookies directly from your local browser on this Mac if you are already logged in.
+                        </p>
+                        <div class="form-group">
+                            <label for="bili-browser-select">Select Browser</label>
+                            <select id="bili-browser-select" class="styled-select" style="width: 100%; padding: 10px 12px; background: #0f172a; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: #fff;">
+                                <option value="chrome">Google Chrome</option>
+                                <option value="edge">Microsoft Edge</option>
+                                <option value="safari">Apple Safari</option>
+                                <option value="firefox">Mozilla Firefox</option>
+                                <option value="brave">Brave Browser</option>
+                            </select>
+                        </div>
+                        <button type="button" class="btn-primary btn-block" onclick="importFromSelectedBrowser()">
+                            <i class="ph ph-download-simple"></i> Extract from Browser
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Video Split / Episode Cutter Modal -->
+    <div class="modal-backdrop" id="split-video-modal" style="display: none;">
+        <div class="modal-card" style="max-width: 480px;">
+            <div class="modal-header">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="width: 34px; height: 34px; border-radius: 8px; background: rgba(56, 189, 248, 0.15); display: flex; align-items: center; justify-content: center; color: #38bdf8;">
+                        <i class="ph ph-scissors" style="font-size: 20px;"></i>
+                    </div>
+                    <div>
+                        <h3 style="margin: 0; font-size: 16px;">Split Video into Parts (កាត់ជាវគ្គៗ)</h3>
+                        <p class="modal-subtitle">Cut 7-8h video into clean, standalone 1-hour episodes</p>
+                    </div>
+                </div>
+                <button class="icon-button" onclick="closeStudioSplitModal()" title="Close"><i class="ph ph-x"></i></button>
+            </div>
+
+            <div class="modal-body">
+                <div class="form-group" style="margin-top: 4px;">
+                    <label for="modal-split-length" style="font-size: 12px; font-weight: 600;">
+                        Episode Length (ប្រវែងវគ្គនីមួយៗ):
+                    </label>
+                    <select id="modal-split-length" class="styled-select" style="width: 100%;">
+                        <option value="3600" selected>✂️ 1 Hour per Part (3600s) — Best for 2h - 8h Videos</option>
+                        <option value="1800">✂️ 30 Minutes per Part (1800s)</option>
+                        <option value="2700">✂️ 45 Minutes per Part (2700s)</option>
+                        <option value="7200">✂️ 2 Hours per Part (7200s)</option>
+                        <option value="900">⚡ 15 Minutes per Part (900s)</option>
+                    </select>
+                </div>
+
+                <div class="form-group" style="margin-top: 14px;">
+                    <label for="modal-split-target" style="font-size: 12px; font-weight: 600;">
+                        Target Video (វីដេអូដែលត្រូវកាត់):
+                    </label>
+                    <select id="modal-split-target" class="styled-select" style="width: 100%;">
+                        <option value="auto" selected>🎬 Dubbed Video (or Source if not dubbed yet)</option>
+                        <option value="source">📁 Original Source Video (វីដេអូដើម)</option>
+                    </select>
+                </div>
+
+                <div id="split-progress-box" style="display: none; margin-top: 16px; padding: 12px; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px;">
+                    <div style="display: flex; justify-content: space-between; font-size: 12px; color: #38bdf8; margin-bottom: 6px;">
+                        <span id="split-progress-text"><i class="ph ph-spinner ph-spin"></i> Splitting video into 1-hour parts...</span>
+                        <span>Fast Stream Copy</span>
+                    </div>
+                    <div class="pipeline-bar-wrap" style="height: 6px; margin: 0;">
+                        <div class="pipeline-bar-fill" style="width: 100%; background: #38bdf8;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px;">
+                <button type="button" class="btn-secondary btn-sm" onclick="closeStudioSplitModal()">Cancel</button>
+                <button type="button" class="btn-primary btn-sm" id="btn-execute-split" onclick="executeSplitCurrentJob()" style="background: #38bdf8; border-color: #38bdf8; color: #0f172a; font-weight: 600;">
+                    <i class="ph ph-scissors"></i> Start Splitting Now
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Notification Toast -->
     <div id="toast" class="toast"></div>
 
+    <!-- QRCode Generator for Bilibili Login -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script src="/static/js/tools.js"></script>
     <script src="/static/js/srt_parser.js"></script>
+    <script src="/static/js/bilibili_modal.js"></script>
     <script src="/static/js/video_dubber.js?v=20261102f"></script>
     <script src="/static/js/app.js"></script>
 </body>

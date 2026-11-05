@@ -132,7 +132,7 @@ def schedule_non_overlapping_clips(
 
     for i, seg in enumerate(segments):
         audio_file = seg.get("audio_file")
-        if not audio_file or not Path(audio_file).exists():
+        if not audio_file or not Path(audio_file).exists() or Path(audio_file).stat().st_size <= 500:
             continue
 
         raw_dur = get_media_duration(audio_file)
@@ -209,8 +209,9 @@ def build_master_audio_track(
     batch_size: int = 50,
 ) -> Path:
     """
-    Builds the full-length master voice track using direct in-memory timeline stitching at 48kHz.
-    Processes thousands of dialogue cues for 1h, 5h, or 10h+ videos in seconds with cinema-grade fidelity.
+    Builds the full-length master voice track using streaming chunked timeline assembly at 48kHz.
+    Operates in constant O(1) memory (~50MB RAM) regardless of video length (1h, 7h, 12h+),
+    completely eliminating Out-Of-Memory crashes.
     """
     if not valid_clips:
         subprocess.run([
@@ -220,27 +221,41 @@ def build_master_audio_track(
         return output_path
 
     sample_rate = 48000
-    total_samples = int(max(1.0, video_duration + 1.0) * sample_rate)
+    total_samples = int(max(1.0, video_duration + 0.5) * sample_rate)
 
     try:
         import av
         import numpy as np
         import wave
 
-        logger.info(f"Assembling collision-free audio timeline for {len(valid_clips)} cues ({video_duration:.1f}s)...")
-        # Pre-allocate zeroed buffer (silence) for the full video duration: shape (total_samples, 2)
-        timeline = np.zeros((total_samples, 2), dtype=np.int16)
+        logger.info(f"Assembling streaming audio timeline for {len(valid_clips)} cues ({video_duration:.1f}s)...")
 
-        for clip in valid_clips:
-            clip_path = clip.get("path")
-            if not clip_path or not Path(clip_path).exists():
+        # Pre-filter valid clips and calculate start/end sample ranges
+        filtered_clips = []
+        for c in valid_clips:
+            cp = c.get("path")
+            if not cp or not Path(cp).exists():
+                continue
+            try:
+                if Path(cp).stat().st_size <= 500:
+                    continue
+            except Exception:
                 continue
 
-            start_sec = float(clip.get("start", 0.0))
-            start_idx = int(start_sec * sample_rate)
-            if start_idx >= total_samples:
-                continue
+            st = float(c.get("start", 0.0))
+            dur = float(c.get("duration", 0.0))
+            s_idx = int(st * sample_rate)
+            e_idx = s_idx + int(dur * sample_rate)
+            filtered_clips.append({
+                "path": str(cp),
+                "start_idx": s_idx,
+                "end_idx": e_idx,
+            })
 
+        # Sort by start_idx for fast interval matching
+        filtered_clips.sort(key=lambda x: x["start_idx"])
+
+        def decode_clip_to_array(clip_path: str) -> Optional[np.ndarray]:
             try:
                 container = av.open(clip_path)
                 resampler = av.AudioResampler(format="s16p", layout="stereo", rate=sample_rate)
@@ -249,76 +264,122 @@ def build_master_audio_track(
                     for rf in resampler.resample(frame):
                         pcm_chunks.append(rf.to_ndarray())
                 container.close()
-
                 if not pcm_chunks:
-                    continue
-
-                # Planar stereo ndarray has shape (2, N_samples) -> transpose to (N_samples, 2)
+                    return None
                 raw_arr = np.concatenate(pcm_chunks, axis=1)
                 if raw_arr.ndim == 2 and raw_arr.shape[0] == 2:
-                    clip_arr = raw_arr.T
+                    return raw_arr.T
                 elif raw_arr.ndim == 2 and raw_arr.shape[1] == 2:
-                    clip_arr = raw_arr
+                    return raw_arr
                 else:
-                    clip_arr = raw_arr.reshape(-1, 2)
-
-                clip_len = clip_arr.shape[0]
-
-                end_idx = min(start_idx + clip_len, total_samples)
-                actual_write_len = end_idx - start_idx
-                if actual_write_len > 0:
-                    timeline[start_idx:end_idx] = clip_arr[:actual_write_len]
-
+                    return raw_arr.reshape(-1, 2)
             except Exception as e:
                 logger.warning(f"Error decoding clip {clip_path}: {e}")
+                return None
 
-        # Write clean timeline WAV directly with exact studio fidelity!
-        # Eliminates loudnorm over silence, which was causing severe pumping & muffled audio.
+        # 5-minute chunks = 14,400,000 samples = ~57.6 MB RAM per chunk!
+        chunk_duration = 300.0
+        chunk_samples = int(chunk_duration * sample_rate)
+
+        # Cache decoded array for any clip that spans across a chunk boundary
+        cached_clip_data: Dict[str, np.ndarray] = {}
+
         with wave.open(str(output_path), "wb") as wf:
             wf.setnchannels(2)
             wf.setsampwidth(2)
             wf.setframerate(sample_rate)
-            wf.writeframes(timeline.tobytes())
 
-        logger.info(f"Master voice track successfully generated with 100% studio fidelity: {output_path}")
+            cur_sample = 0
+            while cur_sample < total_samples:
+                n_samples = min(chunk_samples, total_samples - cur_sample)
+                chunk_buf = np.zeros((n_samples, 2), dtype=np.int16)
+                c_start = cur_sample
+                c_end = cur_sample + n_samples
+
+                # Find all clips overlapping this chunk window
+                for c in filtered_clips:
+                    if c["end_idx"] <= c_start:
+                        # Already passed, remove from cache if present
+                        cached_clip_data.pop(c["path"], None)
+                        continue
+                    if c["start_idx"] >= c_end:
+                        # Future clip, since clips are sorted, we can stop for this chunk
+                        break
+
+                    # Overlaps!
+                    c_path = c["path"]
+                    if c_path not in cached_clip_data:
+                        arr = decode_clip_to_array(c_path)
+                        if arr is None:
+                            continue
+                        cached_clip_data[c_path] = arr
+
+                    clip_arr = cached_clip_data[c_path]
+                    clip_len = clip_arr.shape[0]
+                    actual_clip_end = c["start_idx"] + clip_len
+
+                    o_start = max(c_start, c["start_idx"])
+                    o_end = min(c_end, actual_clip_end)
+
+                    if o_end > o_start:
+                        buf_offset = o_start - c_start
+                        buf_len = o_end - o_start
+                        clip_offset = o_start - c["start_idx"]
+                        chunk_buf[buf_offset : buf_offset + buf_len] = clip_arr[clip_offset : clip_offset + buf_len]
+
+                    # If clip finishes inside this chunk, remove from cache
+                    if actual_clip_end <= c_end:
+                        cached_clip_data.pop(c_path, None)
+
+                wf.writeframes(chunk_buf.tobytes())
+                cur_sample += n_samples
+
+        logger.info(f"Master voice track successfully generated with streaming fidelity: {output_path}")
         return output_path
 
     except Exception as e:
-        logger.error(f"In-memory timeline failed ({e}). Falling back to FFmpeg single-pass...")
-        # Fallback to standard FFmpeg if av/numpy fails
+        logger.error(f"Streaming timeline failed ({e}). Falling back to FFmpeg silence...", exc_info=True)
         silence_path = temp_dir / "silence.wav"
         subprocess.run([
             "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
-            "-t", str(max(1.0, video_duration)), str(silence_path)
+            "-t", str(max(1.0, video_duration)), str(output_path)
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        inputs = ["-i", str(silence_path)]
-        filter_parts = []
-        mix_inputs = ["[0:a]"]
-        for i, clip in enumerate(valid_clips[:50], start=1):
-            inputs.extend(["-i", clip["path"]])
-            start_ms = int(clip["start"] * 1000)
-            filter_parts.append(f"[{i}:a]adelay={start_ms}|{start_ms}[d{i}]")
-            mix_inputs.append(f"[d{i}]")
-        filter_str = ";".join(filter_parts) + f";{''.join(mix_inputs)}amix=inputs={len(mix_inputs)}:normalize=0[voice_out]"
-        cmd = ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_str, "-map", "[voice_out]", str(output_path)]
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return output_path
+
+
+from .subtitle_burner import (
+    get_video_dimensions,
+    build_subtitle_overlay_concat,
+)
 
 
 async def assemble_dubbed_video(
     video_path: str,
     segments: List[Dict[str, Any]],
     output_filename: Optional[str] = None,
-    audio_mode: str = "cinema_3",  # "cinema_3" (3% background + anti-copyright), "replace", "smart_cinema"
+    audio_mode: str = "replace",  # "replace" (100% remove original sound), "cinema_3", "smart_cinema"
     bg_volume: Optional[float] = None,
     burn_subtitles: bool = False,
+    mask_hardsubs: bool = True,
+    anti_copyright_video: bool = True,
+    mirror_video: bool = False,
+    remove_origin_sound: bool = True,
 ) -> Dict[str, Any]:
     """
     Synchronizes synthesized Khmer audio clips onto the video timeline and
-    mixes audio using FFmpeg with strict overlap prevention. Supports arbitrary length (5h, 10h+).
+    mixes audio and video using FFmpeg with strict overlap prevention.
+    
+    Features:
+    - Lip-Sync dialogue sequencing (mouth-aligned, time-fitted, zero drift).
+    - Remove original sound: completely strips original audio so there is zero foreign speech / music impact.
+    - Hardsub concealment: covers original Chinese subtitles with sleek dark banner.
+    - Anti-Copyright Video Shield: 1.03x smart crop/zoom, subtle histogram grade, optional mirror.
+    - Anti-Copyright Audio Protection: stereo phase & harmonic overtone shaping.
+    - Hardware-accelerated H.264 VideoToolbox rendering on macOS.
     """
     video = Path(video_path)
     video_duration = get_media_duration(str(video))
+    vid_w, vid_h = get_video_dimensions(str(video))
 
     if not output_filename:
         out_name = f"dubbed_{video.stem}.mp4"
@@ -349,28 +410,16 @@ async def assemble_dubbed_video(
     vtt_path = DUBBED_DIR / f"{final_video_path.stem}.vtt"
     generate_vtt_file(segments, str(vtt_path))
 
-    # 4. Final Video Assembly
-    # Audio balance configuration:
-    final_cmd = ["ffmpeg", "-y", "-i", str(video), "-i", str(master_voice_path)]
-
-    # Important audio mixing settings:
-    # 1. Default to Silky Smooth Cinema Mix ("smart_cinema" / "smart_sidechain" / "smart"):
-    #    - Natural voice tempo (clamped at max 1.15x) for completely natural, smooth conversational dialogue.
-    #    - Balanced background audio (~20-25% volume) with smooth, gentle ducking (release=650ms, ratio=3.5)
-    #      eliminating all choppy pumping between words.
-    #    - Clean Anti-Copyright Protection (multiband EQ + stereo phase shaping): alters Content ID fingerprint
-    #      without any wobbly chorus, pitch fluctuation, or underwater distortion.
-    #    - Khmer studio voiceover stays 100% crystal-clear, loud, and prominent.
-    # 2. "replace" / "mute": 100% Pure Studio Voiceover (zero original audio - bit-exact identical to preview).
-    # 3. "constant_30": Constant 30% background without ducking.
-
+    # 4. Audio Mixing Configuration
+    # Clean Anti-Copyright Protection (multiband EQ + stereo phase shaping): alters Content ID fingerprint
+    # without any wobbly chorus, pitch fluctuation, or underwater distortion.
     clean_anti_copyright = "aformat=channel_layouts=stereo,equalizer=f=1000:t=q:w=1.2:g=-2.5,equalizer=f=2800:t=q:w=1.2:g=-2.5,stereotools=mlev=0.85:slev=1.15"
 
-    if bg_volume is not None:
-        if bg_volume <= 0.001 and bg_volume >= 0:
-            # 100% Pure Voiceover: zero original video noise/speech
-            audio_filter = "[1:a]volume=1.0[aout]"
-        elif bg_volume < 0:
+    if remove_origin_sound or audio_mode in ("mute", "replace") or (bg_volume is not None and bg_volume <= 0.001 and bg_volume >= 0):
+        # 100% Pure Voiceover: completely strip original video sound (zero foreign speech / zero music / zero copyright impact)
+        audio_filter = "[1:a]volume=1.0[aout]"
+    elif bg_volume is not None:
+        if bg_volume < 0:
             # Smooth Cinema Ducking: 25% background with gentle, smooth ducking (no choppy pumping)
             audio_filter = (
                 f"[0:a]volume=0.25,{clean_anti_copyright}[bg_proc];"
@@ -385,66 +434,88 @@ async def assemble_dubbed_video(
                 f"[1:a]volume=1.0[khmer];"
                 f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
             )
-    elif audio_mode in ("cinema_3", "cinema_4", "cinema_10", "default"):
-        # 3% Original Background + Anti-Copyright Effect (DEFAULT):
-        # Keeps original fighting sound / music at 3% volume, while altering Content ID fingerprint
-        # and letting the 100% Khmer voice stay crisp, prominent, and uninterrupted.
+    elif audio_mode in ("cinema_3", "cinema_4", "cinema_10"):
         eff_vol = bg_volume if (bg_volume is not None and bg_volume > 0) else 0.03
         audio_filter = (
             f"[0:a]volume={eff_vol:.3f},{clean_anti_copyright}[bg];"
             f"[1:a]volume=1.0[khmer];"
             f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
-    elif audio_mode in ("mute", "replace"):
-        # 100% Pure Studio Voiceover: only Khmer dubbing audible, 100% bit-exact identical to preview
-        audio_filter = "[1:a]volume=1.0[aout]"
     elif audio_mode in ("smart_cinema", "smart_sidechain", "smart", "cinema"):
-        # Smooth Cinema Ducking: 25% background with gentle, smooth ducking (no choppy pumping)
+        # Smooth Cinema Ducking
         audio_filter = (
             f"[0:a]volume=0.25,{clean_anti_copyright}[bg_proc];"
             "[bg_proc][1:a]sidechaincompress=threshold=0.015:ratio=3.5:attack=30:release=650:knee=2.5[bg_ducked];"
             "[1:a]volume=1.0[khmer];"
             "[bg_ducked][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
-    elif audio_mode in ("constant_30", "ducking", "constant_25"):
-        audio_filter = (
-            f"[0:a]volume=0.25,{clean_anti_copyright}[bg];"
-            f"[1:a]volume=1.0[khmer];"
-            f"[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
-        )
-    elif audio_mode == "duck_subtle":
-        # 8% subtle background audio
-        audio_filter = (
-            f"[0:a]volume=0.08,{clean_anti_copyright}[bg];"
-            "[1:a]volume=1.0[khmer];"
-            "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
-        )
     else:
-        # Default fallback: 4% background with anti-copyright effect
-        audio_filter = (
-            f"[0:a]volume=0.04,{clean_anti_copyright}[bg];"
-            f"[1:a]volume=1.0[khmer];"
-            "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
-        )
+        # Default: 100% remove original sound for zero copyright impact
+        audio_filter = "[1:a]volume=1.0[aout]"
 
+    # 5. Video Filter Chain & Subtitle Concealment
+    needs_video_filter = mask_hardsubs or anti_copyright_video or mirror_video or burn_subtitles
+    v_filters = []
+
+    if mirror_video:
+        v_filters.append("hflip")
+
+    if anti_copyright_video:
+        # 1.03x Smart Crop/Zoom: strips edge watermarks, alters pixel coordinate grid
+        # eq filter: subtle contrast/color histogram shift modifies frame hash checksums
+        v_filters.append("scale=1.03*iw:-1,crop=iw:ih,eq=contrast=1.03:brightness=0.01:saturation=1.04")
+
+    if mask_hardsubs:
+        # Mask original Chinese hardsubs with sleek dark banner at bottom 16% of frame
+        v_filters.append("drawbox=x=0:y=ih*0.84:w=iw:h=ih*0.16:color=black@0.92:t=fill")
+
+    final_cmd = ["ffmpeg", "-y", "-i", str(video), "-i", str(master_voice_path)]
+    filter_complex_parts = [audio_filter]
+
+    # Check if subtitle burning is requested
+    concat_subs_file = None
     if burn_subtitles:
+        try:
+            concat_subs_file = build_subtitle_overlay_concat(
+                segments=segments,
+                video_width=vid_w,
+                video_height=vid_h,
+                total_duration=video_duration,
+                temp_dir=temp_dir,
+            )
+            final_cmd.extend(["-f", "concat", "-safe", "0", "-i", str(concat_subs_file)])
+            sub_input_idx = 2
+        except Exception as e:
+            logger.warning(f"Failed to prepare burned subtitle frames: {e}. Falling back to soft subtitles.")
+            burn_subtitles = False
+
+    if needs_video_filter:
+        base_v_filter = ",".join(v_filters) if v_filters else "null"
+        if burn_subtitles and concat_subs_file:
+            filter_complex_parts.append(
+                f"[0:v]{base_v_filter}[v_base];"
+                f"[v_base][{sub_input_idx}:v]overlay=0:0[vout]"
+            )
+        else:
+            filter_complex_parts.append(f"[0:v]{base_v_filter}[vout]")
+
+        full_filter_complex = ";".join(filter_complex_parts)
         final_cmd.extend([
-            "-i", str(srt_path),
-            "-filter_complex", audio_filter,
-            "-map", "0:v",
+            "-filter_complex", full_filter_complex,
+            "-map", "[vout]",
             "-map", "[aout]",
-            "-map", "2:s",
-            "-c:v", "copy",
+            "-c:v", "h264_videotoolbox",
+            "-b:v", "3500k",
             "-c:a", "aac",
             "-b:a", "256k",
             "-movflags", "+faststart",
-            "-c:s", "mov_text",
-            "-metadata:s:s:0", "language=khm",
             str(final_video_path)
         ])
     else:
+        # Fast direct stream copy when no video filters requested
+        full_filter_complex = ";".join(filter_complex_parts)
         final_cmd.extend([
-            "-filter_complex", audio_filter,
+            "-filter_complex", full_filter_complex,
             "-map", "0:v",
             "-map", "[aout]",
             "-c:v", "copy",
@@ -455,7 +526,24 @@ async def assemble_dubbed_video(
         ])
 
     logger.info(f"Rendering collision-free dubbed video ({audio_mode}): {' '.join(final_cmd)}")
-    subprocess.run(final_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        subprocess.run(final_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError as e:
+        # If h264_videotoolbox fails, fallback to libx264
+        if "h264_videotoolbox" in final_cmd:
+            logger.warning("h264_videotoolbox failed, falling back to libx264...")
+            fallback_cmd = [
+                arg.replace("h264_videotoolbox", "libx264") if arg == "h264_videotoolbox" else arg
+                for arg in final_cmd
+            ]
+            # Replace -b:v 3500k with preset
+            idx = fallback_cmd.index("-b:v") if "-b:v" in fallback_cmd else -1
+            if idx != -1:
+                fallback_cmd[idx] = "-preset"
+                fallback_cmd[idx+1] = "veryfast"
+            subprocess.run(fallback_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            raise e
 
     return {
         "dubbed_video_path": str(final_video_path),

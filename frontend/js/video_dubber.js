@@ -5,9 +5,21 @@
 let activeVideoJobId = null;
 let pollInterval = null;
 
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str).replace(/[&<>'"]/g, tag => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        "'": '&#39;',
+        '"': '&quot;'
+    }[tag] || tag));
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     initVideoDubberEvents();
     initVoiceTunerControls();
+    loadRecentJobsList();
 
     // Guarantee default audio mode is cinema_3 (3% Background + Anti-Copyright Effect)
     const audioModeSelect = document.getElementById('video-audio-mode');
@@ -166,6 +178,17 @@ async function handleVoicePreview() {
     }
 
     const tuner = getVoiceTunerValues();
+    const effectiveVoice = voiceSelect === 'multi' ? 'male' : voiceSelect;
+
+    const voiceLabels = {
+        'multi': 'Multi-Cast Preview (Piseth Hero)',
+        'male': 'Piseth (Lead Hero)',
+        'male_deep': 'Piseth (Mature Father / Authority -10Hz)',
+        'male_young': 'Piseth (Energetic Boy / Youth +10Hz)',
+        'female': 'Sreymom (Lead Heroine)',
+        'female_sweet': 'Sreymom (Sweet Young Girl +10Hz)',
+        'female_elder': 'Sreymom (Mature Mother / Elder -7Hz)',
+    };
 
     try {
         const resp = await fetch('/api/video/preview-voice', {
@@ -173,7 +196,7 @@ async function handleVoicePreview() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 text: "សួស្តីបងប្អូនទាំងអស់គ្នា សូមស្វាគមន៍មកកាន់វីដេអូបកប្រែជាភាសាខ្មែរ",
-                voice_type: voiceSelect,
+                voice_type: effectiveVoice,
                 rate: tuner.rate,
                 pitch: tuner.pitch,
                 volume: tuner.volume,
@@ -186,8 +209,8 @@ async function handleVoicePreview() {
 
         const audio = new Audio(data.audio_url);
         audio.play();
-        const voiceName = voiceSelect === 'male' ? 'Piseth (Male)' : 'Sreymom (Female)';
-        showToast(`Playing sample: ${voiceName} [Rate: ${tuner.rate}, Pitch: ${tuner.pitch}, Vol: ${tuner.volume}]`, 'success');
+        const vLabel = voiceLabels[effectiveVoice] || effectiveVoice;
+        showToast(`Playing persona: ${vLabel} [Rate: ${tuner.rate}, Pitch: ${tuner.pitch}, Vol: ${tuner.volume}]`, 'success');
     } catch (err) {
         showToast(err.message, 'error');
     } finally {
@@ -225,9 +248,17 @@ async function handleUrlDubbing() {
     const platform = detectPlatformClient(url);
     const voiceType = document.getElementById('video-voice-select').value;
     const tone = document.getElementById('video-tone-select').value;
-    const audioMode = document.getElementById('video-audio-mode').value;
-    const burnSubtitles = document.getElementById('burn-subs-checkbox').checked;
+    let audioMode = document.getElementById('video-audio-mode').value;
+    const removeOriginSound = document.getElementById('remove-origin-sound-checkbox')?.checked ?? true;
+    if (removeOriginSound) {
+        audioMode = "replace";
+    }
+    const burnSubtitles = document.getElementById('burn-subs-checkbox')?.checked ?? false;
+    const maskHardsubs = document.getElementById('mask-hardsubs-checkbox')?.checked ?? true;
+    const antiCopyrightVideo = document.getElementById('anti-copyright-video-checkbox')?.checked ?? true;
+    const mirrorVideo = document.getElementById('mirror-video-checkbox')?.checked ?? false;
     const maxDur = parseInt(document.getElementById('video-duration-select')?.value ?? '0', 10);
+    const splitDur = parseInt(document.getElementById('video-split-duration')?.value ?? '1800', 10);
     const settings = getSavedSettings();
     const tuner = getVoiceTunerValues();
 
@@ -242,12 +273,17 @@ async function handleUrlDubbing() {
                 voice_type: voiceType,
                 tone: tone,
                 audio_mode: audioMode,
+                remove_origin_sound: removeOriginSound,
                 burn_subtitles: burnSubtitles,
+                mask_hardsubs: maskHardsubs,
+                anti_copyright_video: antiCopyrightVideo,
+                mirror_video: mirrorVideo,
                 max_duration: maxDur,
                 api_key: settings.geminiKey || null,
                 voice_rate: tuner.rate,
                 voice_pitch: tuner.pitch,
-                voice_volume: tuner.volume
+                voice_volume: tuner.volume,
+                split_duration: splitDur
             })
         });
 
@@ -259,7 +295,7 @@ async function handleUrlDubbing() {
         const data = await resp.json();
         activeVideoJobId = data.job_id;
         startPollingJobStatus(activeVideoJobId);
-        showToast(`🎉 [${platform}] Dubbing job queued! Downloading and translating...`, "success");
+        showToast(`🎉 [${platform}] Dubbing job queued! Downloading, translating and applying shield...`, "success");
     } catch (err) {
         setPipelineUIState('idle');
         showToast(err.message, "error");
@@ -277,13 +313,34 @@ async function handleFileDubbing() {
     const file = fileInput.files[0];
     const voiceType = document.getElementById('video-voice-select').value;
     const tone = document.getElementById('video-tone-select').value;
-    const audioMode = document.getElementById('video-audio-mode').value;
-    const burnSubtitles = document.getElementById('burn-subs-checkbox').checked;
+    let audioMode = document.getElementById('video-audio-mode').value;
+    const removeOriginSound = document.getElementById('remove-origin-sound-checkbox')?.checked ?? true;
+    if (removeOriginSound) {
+        audioMode = "replace";
+    }
+    const burnSubtitles = document.getElementById('burn-subs-checkbox')?.checked ?? false;
+    const maskHardsubs = document.getElementById('mask-hardsubs-checkbox')?.checked ?? true;
+    const antiCopyrightVideo = document.getElementById('anti-copyright-video-checkbox')?.checked ?? true;
+    const mirrorVideo = document.getElementById('mirror-video-checkbox')?.checked ?? false;
+    const splitDur = parseInt(document.getElementById('video-split-duration')?.value ?? '1800', 10);
     const settings = getSavedSettings();
     const tuner = getVoiceTunerValues();
 
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('voice_type', voiceType);
+    formData.append('tone', tone);
+    formData.append('audio_mode', audioMode);
+    formData.append('remove_origin_sound', removeOriginSound);
+    formData.append('burn_subtitles', burnSubtitles);
+    formData.append('mask_hardsubs', maskHardsubs);
+    formData.append('anti_copyright_video', antiCopyrightVideo);
+    formData.append('mirror_video', mirrorVideo);
+    formData.append('split_duration', splitDur);
+    if (settings.geminiKey) formData.append('api_key', settings.geminiKey);
+    formData.append('voice_rate', tuner.rate);
+    formData.append('voice_pitch', tuner.pitch);
+    formData.append('voice_volume', tuner.volume);
     const subFileInput = document.getElementById('video-sub-file-input');
     if (subFileInput && subFileInput.files && subFileInput.files.length > 0) {
         formData.append('subtitle_file', subFileInput.files[0]);
@@ -324,8 +381,15 @@ async function handleFileDubbing() {
 let isPollingActive = false;
 
 function startPollingJobStatus(jobId) {
+    activeVideoJobId = jobId;
     if (pollInterval) clearInterval(pollInterval);
     isPollingActive = false;
+
+    // Reset error state
+    const errorBox = document.getElementById('pipeline-error-box');
+    if (errorBox) errorBox.style.display = 'none';
+    const pulsingDot = document.getElementById('pipeline-pulsing-dot');
+    if (pulsingDot) pulsingDot.style.background = 'var(--accent-cyan)';
 
     pollInterval = setInterval(async () => {
         if (isPollingActive) return; // Prevent request pile-up
@@ -341,11 +405,25 @@ function startPollingJobStatus(jobId) {
             if (job.status === 'completed') {
                 clearInterval(pollInterval);
                 displayCompletedVideo(job);
+                loadRecentJobsList();
                 showToast("🎉 Video dubbing complete! Ready to watch & download.", "success");
-            } else if (job.status === 'failed') {
+            } else if (job.status === 'cancelled') {
                 clearInterval(pollInterval);
                 setPipelineUIState('idle');
-                showToast(`Dubbing failed: ${job.error || "Unknown error"}`, "error");
+                const pipelineCard = document.getElementById('video-pipeline-card');
+                if (pipelineCard) pipelineCard.style.display = 'none';
+                loadRecentJobsList();
+                showToast("⛔ Process cancelled by user.", "info");
+            } else if (job.status === 'failed') {
+                clearInterval(pollInterval);
+                const errorBox = document.getElementById('pipeline-error-box');
+                const errorMsg = document.getElementById('pipeline-error-msg');
+                const pulsingDot = document.getElementById('pipeline-pulsing-dot');
+                if (errorBox) errorBox.style.display = 'block';
+                if (errorMsg) errorMsg.textContent = job.error || "Process stopped. All transcribed cues & audio are safely saved.";
+                if (pulsingDot) pulsingDot.style.background = '#ef4444';
+                loadRecentJobsList();
+                showToast(`Dubbing paused: ${job.error || "Click Resume to continue"}`, "warning");
             }
         } catch (err) {
             console.error("Polling error:", err);
@@ -355,17 +433,286 @@ function startPollingJobStatus(jobId) {
     }, 800);
 }
 
+// ─────────────────────────────────────────────
+// Checkpoint & Auto-Resume Handlers
+// ─────────────────────────────────────────────
+async function resumeCurrentJob() {
+    let jobId = activeVideoJobId;
+    if (!jobId) {
+        const select = document.getElementById('recent-jobs-select');
+        if (select && select.value) jobId = select.value;
+    }
+    if (!jobId) {
+        try {
+            const resp = await fetch('/api/video/jobs');
+            if (resp.ok) {
+                const jobs = await resp.json();
+                if (jobs.length > 0) jobId = jobs[0].id;
+            }
+        } catch (e) {}
+    }
+    if (!jobId) {
+        showToast("No active job selected to resume", "warning");
+        return;
+    }
+    await resumeJobById(jobId);
+}
+
+async function resumeJobById(jobId) {
+    if (!jobId) return;
+
+    try {
+        const errorBox = document.getElementById('pipeline-error-box');
+        if (errorBox) errorBox.style.display = 'none';
+        const pulsingDot = document.getElementById('pipeline-pulsing-dot');
+        if (pulsingDot) pulsingDot.style.background = 'var(--accent-cyan)';
+
+        showToast(`⚡ Resuming job [${jobId}] from saved checkpoint...`, "info");
+        setPipelineUIState('processing');
+
+        const resp = await fetch(`/api/video/job/${jobId}/resume`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.json().catch(() => ({}));
+            throw new Error(errData.detail || `Failed to resume (HTTP ${resp.status})`);
+        }
+
+        activeVideoJobId = jobId;
+        startPollingJobStatus(jobId);
+        showToast(`⚡ Resumed job ${jobId}! Processing from saved cues and audio...`, "success");
+    } catch (err) {
+        console.error("Resume error:", err);
+        showToast(err.message, "error");
+    }
+}
+
+async function loadRecentJobsList(autoSelectActiveOnly = true) {
+    const select = document.getElementById('recent-jobs-select');
+    if (!select) return;
+
+    try {
+        const resp = await fetch('/api/video/jobs');
+        if (!resp.ok) return;
+        const jobs = await resp.json();
+
+        select.innerHTML = '<option value="">-- Select a past or pending job --</option>';
+        jobs.forEach(j => {
+            const opt = document.createElement('option');
+            opt.value = j.id;
+            const statusIcon = j.status === 'completed' ? '✅' : (j.status === 'cancelled' ? '⛔' : (j.status === 'failed' ? '⚠️' : '⏳'));
+            opt.textContent = `${statusIcon} [${j.id}] ${j.title || 'Video'} (${j.progress}%, ${j.segments_count} cues)`;
+            select.appendChild(opt);
+        });
+
+        // ONLY auto-select and show if a job is actively running or queued!
+        const runningJob = jobs.find(j => j.status === 'processing' || j.status === 'queued');
+        if (runningJob) {
+            select.value = runningJob.id;
+            onSelectRecentJob(runningJob.id);
+        } else {
+            // Keep idle so user has a clean interface to start new jobs
+            select.value = "";
+            const resumeBtn = document.getElementById('btn-quick-resume');
+            const quickCancelBtn = document.getElementById('btn-quick-cancel');
+            if (resumeBtn) resumeBtn.style.display = 'none';
+            if (quickCancelBtn) quickCancelBtn.style.display = 'none';
+        }
+    } catch (err) {
+        console.warn("Could not load recent jobs:", err);
+    }
+}
+
+async function onSelectRecentJob(jobId) {
+    const resumeBtn = document.getElementById('btn-quick-resume');
+    const quickCancelBtn = document.getElementById('btn-quick-cancel');
+    if (!jobId) {
+        if (resumeBtn) resumeBtn.style.display = 'none';
+        if (quickCancelBtn) quickCancelBtn.style.display = 'none';
+        dismissCurrentJob();
+        return;
+    }
+
+    // Immediately fetch and switch UI to this job
+    activeVideoJobId = jobId;
+    try {
+        const resp = await fetch(`/api/video/status/${jobId}`);
+        if (!resp.ok) return;
+        const job = await resp.json();
+
+        setPipelineUIState('active');
+        updatePipelineProgress(job);
+
+        const errorBox = document.getElementById('pipeline-error-box');
+        const pulsingDot = document.getElementById('pipeline-pulsing-dot');
+        const errorTitle = document.getElementById('pipeline-error-title');
+        const errorMsg = document.getElementById('pipeline-error-msg');
+
+        if (job.status === 'processing' || job.status === 'queued') {
+            if (resumeBtn) resumeBtn.style.display = 'none';
+            if (quickCancelBtn) quickCancelBtn.style.display = 'inline-flex';
+            if (errorBox) errorBox.style.display = 'none';
+            if (pulsingDot) {
+                pulsingDot.style.background = job.status === 'queued' ? '#f59e0b' : 'var(--accent-cyan)';
+                pulsingDot.style.opacity = '1';
+            }
+            startPollingJobStatus(jobId);
+        } else if (job.status === 'completed') {
+            if (quickCancelBtn) quickCancelBtn.style.display = 'none';
+            if (resumeBtn) resumeBtn.style.display = 'none';
+            if (errorBox) errorBox.style.display = 'none';
+            if (pulsingDot) {
+                pulsingDot.style.background = '#10b981';
+            }
+            displayCompletedVideo(job);
+        } else if (job.status === 'cancelled') {
+            if (quickCancelBtn) quickCancelBtn.style.display = 'none';
+            if (resumeBtn) resumeBtn.style.display = 'inline-flex';
+            if (pulsingDot) {
+                pulsingDot.style.background = '#ef4444';
+            }
+            if (errorBox) {
+                errorBox.style.display = 'block';
+                if (errorTitle) errorTitle.textContent = "Pipeline Cancelled by User";
+                if (errorMsg) errorMsg.textContent = "This dubbing job was cancelled. All generated transcripts & audio chunks are safely saved. Click 'Resume Job' to continue, or 'Dismiss' to clear.";
+            }
+        } else if (job.status === 'failed') {
+            if (quickCancelBtn) quickCancelBtn.style.display = 'none';
+            if (resumeBtn) resumeBtn.style.display = 'inline-flex';
+            if (pulsingDot) {
+                pulsingDot.style.background = '#ef4444';
+            }
+            if (errorBox) {
+                errorBox.style.display = 'block';
+                if (errorTitle) errorTitle.textContent = "Pipeline Paused / Interrupted";
+                if (errorMsg) errorMsg.textContent = job.error || "Job was interrupted. Click Resume to continue.";
+            }
+        }
+    } catch (err) {
+        console.error("Error switching to selected job:", err);
+    }
+}
+
+function dismissCurrentJob() {
+    activeVideoJobId = null;
+    if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+    }
+    setPipelineUIState('idle');
+    const select = document.getElementById('recent-jobs-select');
+    if (select) select.value = "";
+    const pipelineCard = document.getElementById('video-pipeline-card');
+    if (pipelineCard) pipelineCard.style.display = 'none';
+    const episodicCard = document.getElementById('episodic-episodes-card');
+    if (episodicCard) episodicCard.style.display = 'none';
+    const resumeBtn = document.getElementById('btn-quick-resume');
+    const quickCancelBtn = document.getElementById('btn-quick-cancel');
+    if (resumeBtn) resumeBtn.style.display = 'none';
+    if (quickCancelBtn) quickCancelBtn.style.display = 'none';
+    showToast("Cleared active pipeline view. Ready for new video.", "info");
+}
+
+async function resumeSelectedRecentJob() {
+    const select = document.getElementById('recent-jobs-select');
+    if (!select || !select.value) {
+        showToast("Please select a job from the list first", "warning");
+        return;
+    }
+    await resumeJobById(select.value);
+}
+
+async function cancelCurrentJob() {
+    let jobId = activeVideoJobId;
+    if (!jobId) {
+        const select = document.getElementById('recent-jobs-select');
+        if (select && select.value) jobId = select.value;
+    }
+    if (!jobId) {
+        showToast("No active job to cancel", "warning");
+        return;
+    }
+
+    if (!confirm("Are you sure you want to cancel the dubbing process?")) {
+        return;
+    }
+
+    const cancelBtn = document.getElementById('btn-cancel-pipeline');
+    const quickCancelBtn = document.getElementById('btn-quick-cancel');
+    if (cancelBtn) {
+        cancelBtn.disabled = true;
+        cancelBtn.innerHTML = '<i class="ph ph-spinner ph-spin"></i> Cancelling...';
+    }
+    if (quickCancelBtn) {
+        quickCancelBtn.disabled = true;
+        quickCancelBtn.innerHTML = '<i class="ph ph-spinner ph-spin"></i> Cancelling...';
+    }
+
+    try {
+        const resp = await fetch(`/api/video/job/${jobId}/cancel`, {
+            method: 'POST'
+        });
+
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+        }
+
+        if (resp.ok) {
+            showToast("Process successfully cancelled.", "info");
+            dismissCurrentJob();
+            loadRecentJobsList(true);
+        } else {
+            const err = await resp.json().catch(() => ({ detail: "Failed to cancel" }));
+            showToast(err.detail || "Failed to cancel process", "error");
+        }
+    } catch (err) {
+        showToast(err.message, "error");
+    } finally {
+        if (cancelBtn) {
+            cancelBtn.disabled = false;
+            cancelBtn.innerHTML = '<i class="ph ph-x-circle"></i> Cancel Process';
+        }
+        if (quickCancelBtn) {
+            quickCancelBtn.disabled = false;
+            quickCancelBtn.innerHTML = '<i class="ph ph-x-circle"></i> Cancel';
+        }
+    }
+}
+
 // Update Visual Pipeline Stages
 function updatePipelineProgress(job) {
     const stageText = document.getElementById('pipeline-stage-text');
     const percentText = document.getElementById('pipeline-percent-text');
     const progressBar = document.getElementById('pipeline-progress-fill');
     const jobTitle = document.getElementById('pipeline-job-title');
+    const cancelPipelineBtn = document.getElementById('btn-cancel-pipeline');
 
     if (stageText) stageText.textContent = job.stage || "Processing...";
     if (percentText) percentText.textContent = `${job.progress}%`;
     if (progressBar) progressBar.style.width = `${job.progress}%`;
     if (jobTitle && job.title) jobTitle.textContent = job.title;
+
+    if (cancelPipelineBtn) {
+        if (job.status === 'processing' || job.status === 'queued') {
+            cancelPipelineBtn.style.display = 'inline-flex';
+        } else {
+            cancelPipelineBtn.style.display = 'none';
+        }
+    }
+
+    // Auto-hide error banner if the job is active
+    const errorBox = document.getElementById('pipeline-error-box');
+    if (errorBox && (job.status === 'processing' || job.status === 'queued' || job.status === 'completed')) {
+        errorBox.style.display = 'none';
+    }
+    const pulsingDot = document.getElementById('pipeline-pulsing-dot');
+    if (pulsingDot && (job.status === 'processing' || job.status === 'queued')) {
+        pulsingDot.style.background = 'var(--accent-cyan)';
+    }
 
     // Live Metrics Strip (Speed, ETA, Details)
     const speedChip = document.getElementById('metric-speed');
@@ -423,6 +770,347 @@ function updatePipelineProgress(job) {
             }
         }
     });
+
+    // Render Episodic 30-minute Part Cards if video is chunked
+    if (job.is_episodic || (job.episodes && job.episodes.length > 0)) {
+        renderEpisodicCards(job);
+    }
+}
+
+// ─────────────────────────────────────────────
+// Episodic 30-Minute Part Cards & Multi-Download Engine
+// ─────────────────────────────────────────────
+let selectedEpisodeIndices = new Set();
+let latestMergedVideoUrl = null;
+
+function renderEpisodicCards(job) {
+    const card = document.getElementById('episodic-episodes-card');
+    const grid = document.getElementById('episodic-cards-grid');
+    const summaryText = document.getElementById('episodic-summary-text');
+    const zipBtn = document.getElementById('btn-download-all-zip');
+    const mergeBtn = document.getElementById('btn-merge-selected-episodes');
+    const selectStrip = document.getElementById('episodic-batch-select-strip');
+    const selectedLabel = document.getElementById('selected-episodes-label');
+    const selectAllCheckbox = document.getElementById('checkbox-select-all-episodes');
+    if (!card || !grid) return;
+
+    const episodes = job.episodes || [];
+    if (!job.is_episodic && episodes.length === 0) {
+        card.style.display = 'none';
+        return;
+    }
+
+    card.style.display = 'block';
+
+    const completed = episodes.filter(e => e.status === 'completed');
+    const total = episodes.length;
+
+    // Prune invalid selected indices
+    const completedIndices = new Set(completed.map(e => e.index));
+    for (const idx of selectedEpisodeIndices) {
+        if (!completedIndices.has(idx)) {
+            selectedEpisodeIndices.delete(idx);
+        }
+    }
+
+    if (summaryText) {
+        if (job.status === 'cancelled') {
+            summaryText.innerHTML = `<span style="color: #ef4444; font-weight: 600;">⛔ Process was cancelled.</span> <b>${completed.length} of ${total}</b> episodes completed before cancellation. Click <b>"Resume Job"</b> above to continue anytime.`;
+        } else {
+            summaryText.innerHTML = `<b>${completed.length} of ${total}</b> episodes completed (${Math.round((completed.length/Math.max(1, total))*100)}%) — Ready to download part-by-part or merge into 1 clip!`;
+        }
+    }
+
+    // Toggle Batch Strip and Action Buttons
+    if (completed.length > 0) {
+        if (selectStrip) selectStrip.style.display = 'flex';
+        if (zipBtn) {
+            zipBtn.style.display = 'inline-flex';
+            zipBtn.innerHTML = `<i class="ph ph-package"></i> Download All (.ZIP)`;
+        }
+    } else {
+        if (selectStrip) selectStrip.style.display = 'none';
+        if (zipBtn) zipBtn.style.display = 'none';
+    }
+
+    updateMergeButtonUI(completed.length);
+
+    // Render cards
+    grid.innerHTML = '';
+    const isJobCancelled = job.status === 'cancelled';
+
+    episodes.forEach((ep) => {
+        const isDone = ep.status === 'completed';
+        const isCancelled = ep.status === 'cancelled' || (isJobCancelled && !isDone);
+        const isProcessing = ep.status === 'processing' && !isCancelled;
+        const isChecked = selectedEpisodeIndices.has(ep.index);
+
+        const cardEl = document.createElement('div');
+        cardEl.className = 'episode-item-card';
+        cardEl.style.cssText = `
+            background: ${isDone ? (isChecked ? 'rgba(16, 185, 129, 0.12)' : 'rgba(16, 185, 129, 0.05)') : (isCancelled ? 'rgba(239, 68, 68, 0.03)' : (isProcessing ? 'rgba(56, 189, 248, 0.05)' : 'rgba(255, 255, 255, 0.02)'))};
+            border: 1px solid ${isDone ? (isChecked ? '#10b981' : 'rgba(16, 185, 129, 0.35)') : (isCancelled ? 'rgba(239, 68, 68, 0.25)' : (isProcessing ? 'rgba(56, 189, 248, 0.35)' : 'var(--border-subtle)'))};
+            border-radius: 10px;
+            padding: 14px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            transition: all 0.2s ease;
+        `;
+
+        let statusBadge = '';
+        if (isDone) {
+            statusBadge = `<span style="font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 6px; background: rgba(16, 185, 129, 0.2); color: #10b981; display: inline-flex; align-items: center; gap: 4px;">
+                <i class="ph ph-check-circle"></i> Ready to Download
+            </span>`;
+        } else if (isCancelled) {
+            statusBadge = `<span style="font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 6px; background: rgba(239, 68, 68, 0.15); color: #ef4444; display: inline-flex; align-items: center; gap: 4px;">
+                <i class="ph ph-x-circle"></i> Cancelled
+            </span>`;
+        } else if (isProcessing) {
+            statusBadge = `<span style="font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; display: inline-flex; align-items: center; gap: 4px;">
+                <i class="ph ph-spinner ph-spin"></i> Dubbing Episode... (${ep.progress || 0}%)
+            </span>`;
+        } else {
+            statusBadge = `<span style="font-size: 11px; font-weight: 500; padding: 3px 8px; border-radius: 6px; background: rgba(255, 255, 255, 0.05); color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px;">
+                <i class="ph ph-clock"></i> In Queue
+            </span>`;
+        }
+
+        const durMin = Math.round((ep.duration || 1800) / 60);
+        const cuesInfo = ep.cues_count ? ` • ${ep.cues_count} cues` : '';
+        const sizeInfo = ep.size_mb ? ` • ${ep.size_mb} MB` : '';
+
+        let actionsHtml = '';
+        if (isDone && ep.download_url) {
+            actionsHtml = `
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px;">
+                    <a href="${ep.download_url}" download class="btn-primary btn-xs" style="background: #10b981; border-color: #10b981; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">
+                        <i class="ph ph-download-simple"></i> Download MP4
+                    </a>
+                    ${ep.srt_url ? `
+                    <a href="${ep.srt_url}" download class="btn-secondary btn-xs" style="text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">
+                        <i class="ph ph-subtitles"></i> SRT
+                    </a>` : ''}
+                    <button type="button" class="btn-secondary btn-xs" onclick="previewEpisodeVideo('${ep.download_url}', '${escapeHtml(ep.title)}')">
+                        <i class="ph ph-play"></i> Play
+                    </button>
+                </div>
+            `;
+        } else if (isCancelled) {
+            actionsHtml = `
+                <div style="font-size: 11px; color: #ef4444; font-style: italic;">
+                    Stopped (${ep.progress ? ep.progress + '%' : 'Cancelled by user'})
+                </div>
+            `;
+        } else if (isProcessing) {
+            actionsHtml = `
+                <div style="font-size: 11px; color: var(--text-muted); font-style: italic;">
+                    ${ep.stage || 'Translating and generating voices...'}
+                </div>
+            `;
+        } else {
+            actionsHtml = `
+                <div style="font-size: 11px; color: var(--text-muted);">
+                    Will automatically start once earlier parts complete
+                </div>
+            `;
+        }
+
+        const checkboxHtml = isDone ? `
+            <input type="checkbox" class="episode-check-input" value="${ep.index}"
+                ${isChecked ? 'checked' : ''}
+                onchange="onToggleEpisodeSelection(${ep.index}, this.checked)"
+                style="width: 18px; height: 18px; cursor: pointer; accent-color: #10b981; flex-shrink: 0;">
+        ` : `
+            <input type="checkbox" disabled style="width: 18px; height: 18px; opacity: 0.3; cursor: not-allowed; flex-shrink: 0;">
+        `;
+
+        cardEl.innerHTML = `
+            <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+                <label style="display: flex; align-items: flex-start; gap: 8px; cursor: ${isDone ? 'pointer' : 'default'}; margin: 0; flex: 1;">
+                    ${checkboxHtml}
+                    <div>
+                        <div style="font-weight: 600; font-size: 14px; color: ${isChecked ? '#10b981' : 'var(--text-primary)'};">${ep.title}</div>
+                        <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">~${durMin} Mins${cuesInfo}${sizeInfo}</div>
+                    </div>
+                </label>
+                ${statusBadge}
+            </div>
+            ${actionsHtml}
+        `;
+
+        grid.appendChild(cardEl);
+    });
+}
+
+function updateMergeButtonUI(completedCount) {
+    const mergeBtn = document.getElementById('btn-merge-selected-episodes');
+    const selectedLabel = document.getElementById('selected-episodes-label');
+    const selectAllCheckbox = document.getElementById('checkbox-select-all-episodes');
+
+    const count = selectedEpisodeIndices.size;
+    if (selectedLabel) {
+        selectedLabel.textContent = `${count} parts selected`;
+    }
+
+    if (selectAllCheckbox) {
+        selectAllCheckbox.checked = completedCount > 0 && count === completedCount;
+    }
+
+    if (mergeBtn) {
+        if (count >= 1) {
+            mergeBtn.style.display = 'inline-flex';
+            const partWord = count === 1 ? 'Part' : 'Parts';
+            mergeBtn.innerHTML = `<i class="ph ph-intersect"></i> Merge Selected (${count} ${partWord}) into 1 Video`;
+        } else {
+            mergeBtn.style.display = 'none';
+        }
+    }
+}
+
+function onToggleEpisodeSelection(epIndex, isChecked) {
+    if (isChecked) {
+        selectedEpisodeIndices.add(epIndex);
+    } else {
+        selectedEpisodeIndices.delete(epIndex);
+    }
+    // Re-render cards without losing state
+    if (activeVideoJobId) {
+        fetchEpisodicProgress();
+    }
+}
+
+function toggleSelectAllEpisodes(isChecked) {
+    const checkboxes = document.querySelectorAll('.episode-check-input');
+    checkboxes.forEach((cb) => {
+        const idx = parseInt(cb.value, 10);
+        if (isChecked) {
+            selectedEpisodeIndices.add(idx);
+        } else {
+            selectedEpisodeIndices.delete(idx);
+        }
+    });
+    if (activeVideoJobId) {
+        fetchEpisodicProgress();
+    }
+}
+
+async function mergeSelectedEpisodes() {
+    if (!activeVideoJobId) {
+        showToast("No active job selected", "warning");
+        return;
+    }
+
+    const indices = Array.from(selectedEpisodeIndices).sort((a, b) => a - b);
+    if (indices.length === 0) {
+        showToast("Please select at least 1 completed episode part to merge!", "warning");
+        return;
+    }
+
+    const mergeBtn = document.getElementById('btn-merge-selected-episodes');
+    const originalHtml = mergeBtn ? mergeBtn.innerHTML : '';
+    if (mergeBtn) {
+        mergeBtn.disabled = true;
+        mergeBtn.innerHTML = `<i class="ph ph-spinner ph-spin"></i> Merging ${indices.length} Clips (Fast Stream Copy)...`;
+    }
+
+    showToast(`🔗 Merging ${indices.length} parts into 1 video...`, "info");
+
+    try {
+        const resp = await fetch(`/api/video/job/${activeVideoJobId}/merge-episodes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                episode_indices: indices,
+            })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.json().catch(() => ({}));
+            throw new Error(errData.detail || `Merge failed (HTTP ${resp.status})`);
+        }
+
+        const data = await resp.json();
+        latestMergedVideoUrl = data.download_url;
+
+        // Show merged banner
+        const banner = document.getElementById('episodic-merged-banner');
+        const titleEl = document.getElementById('merged-result-title');
+        const metaEl = document.getElementById('merged-result-meta');
+        const dlMp4Btn = document.getElementById('btn-download-merged-mp4');
+        const dlSrtBtn = document.getElementById('btn-download-merged-srt');
+
+        if (titleEl) titleEl.textContent = `🎉 Merged ${data.episodes_count} Parts into 1 Video (${data.filename})!`;
+        if (metaEl) metaEl.textContent = `Duration: ${data.duration_formatted} • Size: ${data.size_mb} MB • ${data.subtitles_count} Khmer dialogue cues aligned`;
+        if (dlMp4Btn) dlMp4Btn.href = data.download_url;
+        if (dlSrtBtn) {
+            if (data.srt_url) {
+                dlSrtBtn.href = data.srt_url;
+                dlSrtBtn.style.display = 'inline-flex';
+            } else {
+                dlSrtBtn.style.display = 'none';
+            }
+        }
+        if (banner) {
+            banner.style.display = 'block';
+            banner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        // Auto trigger download of the merged video
+        const downloadLink = document.createElement('a');
+        downloadLink.href = data.download_url;
+        downloadLink.download = data.filename;
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+
+        showToast(`🎉 Merged ${data.episodes_count} parts successfully! Starting download...`, "success");
+    } catch (err) {
+        console.error("Merge error:", err);
+        showToast(err.message, "error");
+    } finally {
+        if (mergeBtn) {
+            mergeBtn.disabled = false;
+            mergeBtn.innerHTML = originalHtml;
+        }
+    }
+}
+
+function playMergedVideoNow() {
+    if (!latestMergedVideoUrl) return;
+    previewEpisodeVideo(latestMergedVideoUrl, "Merged Continuous Video");
+}
+
+function previewEpisodeVideo(url, title) {
+    const videoPlayer = document.getElementById('dubbed-video-player');
+    const resultsCard = document.getElementById('video-results-card');
+    if (videoPlayer) {
+        videoPlayer.src = url;
+        if (resultsCard) resultsCard.style.display = 'block';
+        videoPlayer.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        videoPlayer.play().catch(() => {});
+        showToast(`Playing ${title}`, 'info');
+    }
+}
+
+function downloadAllEpisodesZip() {
+    if (!activeVideoJobId) {
+        showToast("No active job selected", "warning");
+        return;
+    }
+    showToast("Packaging all finished episodes into ZIP...", "info");
+    window.location.href = `/api/video/job/${activeVideoJobId}/download-all-zip`;
+}
+
+async function fetchEpisodicProgress() {
+    if (!activeVideoJobId) return;
+    try {
+        const resp = await fetch(`/api/video/job/${activeVideoJobId}/episodes`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        renderEpisodicCards({ is_episodic: true, episodes: data.episodes });
+    } catch (e) {}
 }
 
 // =========================================================================
@@ -487,6 +1175,15 @@ function displayCompletedVideo(job) {
 
     // Render interactive CapCut dialogue cue cards
     renderStudioCueCards();
+
+    // Render episode parts list if available
+    const parts = job.parts || job.result?.parts;
+    if (parts && parts.length > 0) {
+        renderVideoPartsList(parts);
+    } else {
+        const partsCard = document.getElementById('video-parts-card');
+        if (partsCard) partsCard.style.display = 'none';
+    }
 
     resultsCard.style.display = 'block';
     resultsCard.scrollIntoView({ behavior: 'smooth' });
@@ -633,8 +1330,12 @@ function renderStudioCueCards() {
             <div class="cue-card-footer">
                 <div class="cue-footer-left">
                     <select class="cue-voice-picker" onchange="onCueVoiceChange(${idx}, this.value)">
-                        <option value="male" ${seg.voice_type === 'male' ? 'selected' : ''}>👨 Piseth (Male)</option>
-                        <option value="female" ${seg.voice_type === 'female' ? 'selected' : ''}>👩 Sreymom (Female)</option>
+                        <option value="male" ${(!seg.voice_type || seg.voice_type === 'male') ? 'selected' : ''}>👨 Piseth (Lead Hero)</option>
+                        <option value="male_deep" ${seg.voice_type === 'male_deep' ? 'selected' : ''}>🧔 Piseth (Deep Father / Authority -10Hz)</option>
+                        <option value="male_young" ${seg.voice_type === 'male_young' ? 'selected' : ''}>👦 Piseth (Energetic Boy / Youth +10Hz)</option>
+                        <option value="female" ${seg.voice_type === 'female' ? 'selected' : ''}>👩 Sreymom (Lead Heroine)</option>
+                        <option value="female_sweet" ${seg.voice_type === 'female_sweet' ? 'selected' : ''}>👧 Sreymom (Sweet Young Girl +10Hz)</option>
+                        <option value="female_elder" ${seg.voice_type === 'female_elder' ? 'selected' : ''}>👵 Sreymom (Mature Mother / Elder -7Hz)</option>
                     </select>
                 </div>
                 <div class="cue-footer-right">
@@ -898,14 +1599,24 @@ async function studioRerenderVideo() {
 
     try {
         const tuner = getVoiceTunerValues();
+        const removeOriginSound = document.getElementById('remove-origin-sound-checkbox')?.checked ?? (bgVol <= 0.001);
+        const maskHardsubs = document.getElementById('mask-hardsubs-checkbox')?.checked ?? true;
+        const antiCopyrightVideo = document.getElementById('anti-copyright-video-checkbox')?.checked ?? true;
+        const mirrorVideo = document.getElementById('mirror-video-checkbox')?.checked ?? false;
+        const burnSubtitles = document.getElementById('burn-subs-checkbox')?.checked ?? false;
+
         const resp = await fetch(`/api/video/job/${studioJobId}/rerender`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 segments: studioSegments,
-                audio_mode: audioMode,
-                bg_volume: bgVol,
-                burn_subtitles: false,
+                audio_mode: removeOriginSound ? 'replace' : audioMode,
+                remove_origin_sound: removeOriginSound,
+                bg_volume: removeOriginSound ? 0.0 : bgVol,
+                burn_subtitles: burnSubtitles,
+                mask_hardsubs: maskHardsubs,
+                anti_copyright_video: antiCopyrightVideo,
+                mirror_video: mirrorVideo,
                 voice_rate: tuner.rate,
                 voice_pitch: tuner.pitch,
                 voice_volume: tuner.volume
@@ -1031,16 +1742,31 @@ function formatSeconds(sec) {
 
 function setPipelineUIState(state) {
     const pipelineCard = document.getElementById('video-pipeline-card');
-    if (!pipelineCard) return;
+    const startUrlBtn = document.getElementById('start-dub-btn');
+    const startFileBtn = document.getElementById('start-file-dub-btn');
 
-    if (state === 'active') {
-        pipelineCard.style.display = 'block';
-        document.getElementById('video-results-card').style.display = 'none';
-        document.getElementById('pipeline-progress-fill').style.width = '5%';
-        document.getElementById('pipeline-percent-text').textContent = '5%';
-        document.getElementById('pipeline-stage-text').textContent = 'Starting pipeline...';
+    if (state === 'active' || state === 'processing') {
+        if (pipelineCard) pipelineCard.style.display = 'block';
+        const resCard = document.getElementById('video-results-card');
+        if (resCard) resCard.style.display = 'none';
+        if (startUrlBtn) {
+            startUrlBtn.disabled = true;
+            startUrlBtn.innerHTML = '<i class="ph ph-spinner ph-spin"></i> Dubbing in Progress...';
+        }
+        if (startFileBtn) {
+            startFileBtn.disabled = true;
+            startFileBtn.innerHTML = '<i class="ph ph-spinner ph-spin"></i> Dubbing in Progress...';
+        }
     } else {
-        pipelineCard.style.display = 'none';
+        if (pipelineCard) pipelineCard.style.display = 'none';
+        if (startUrlBtn) {
+            startUrlBtn.disabled = false;
+            startUrlBtn.innerHTML = '<i class="ph ph-film-strip"></i> Start Dubbing Video URL';
+        }
+        if (startFileBtn) {
+            startFileBtn.disabled = false;
+            startFileBtn.innerHTML = '<i class="ph ph-film-strip"></i> Start Dubbing Uploaded Video';
+        }
     }
 }
 
@@ -1289,5 +2015,151 @@ async function executeDownloadWithAnimation() {
             closeDownloadModal();
             if (cancelBtn) cancelBtn.disabled = false;
         }, 1200);
+    }
+}
+
+// ─────────────────────────────────────────────
+// Video Splitter & Episode Cutter Handlers
+// ─────────────────────────────────────────────
+function openStudioSplitModal() {
+    const modal = document.getElementById('split-video-modal');
+    if (modal) modal.style.display = 'flex';
+}
+
+function closeStudioSplitModal() {
+    const modal = document.getElementById('split-video-modal');
+    if (modal) modal.style.display = 'none';
+    const progressBox = document.getElementById('split-progress-box');
+    if (progressBox) progressBox.style.display = 'none';
+    const btn = document.getElementById('btn-execute-split');
+    if (btn) btn.disabled = false;
+}
+
+async function executeSplitCurrentJob() {
+    const jobId = activeVideoJobId || studioJobId;
+    if (!jobId) {
+        showToast("Please select or run a video job first before splitting", "warning");
+        return;
+    }
+
+    const lengthSelect = document.getElementById('modal-split-length');
+    const targetSelect = document.getElementById('modal-split-target');
+    const splitDur = parseInt(lengthSelect?.value || '3600', 10);
+    const target = targetSelect?.value || 'auto';
+
+    const progressBox = document.getElementById('split-progress-box');
+    const progressText = document.getElementById('split-progress-text');
+    const btn = document.getElementById('btn-execute-split');
+
+    if (progressBox) progressBox.style.display = 'block';
+    if (btn) btn.disabled = true;
+    if (progressText) progressText.innerHTML = `<i class="ph ph-spinner ph-spin"></i> Splitting video into ${Math.round(splitDur / 60)}m parts with fast stream copy...`;
+
+    try {
+        const resp = await fetch(`/api/video/job/${jobId}/split`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                split_duration: splitDur,
+                target: target
+            })
+        });
+
+        if (!resp.ok) {
+            const errData = await resp.json().catch(() => ({}));
+            throw new Error(errData.detail || `Split failed (HTTP ${resp.status})`);
+        }
+
+        const data = await resp.json();
+        closeStudioSplitModal();
+        renderVideoPartsList(data.parts);
+        showToast(`🎉 Video successfully split into ${data.total_parts} episodes (${Math.round(splitDur / 60)}m each)!`, "success");
+
+        const partsCard = document.getElementById('video-parts-card');
+        if (partsCard) {
+            partsCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    } catch (err) {
+        console.error("Split error:", err);
+        showToast("Error splitting video: " + err.message, "error");
+        if (progressBox) progressBox.style.display = 'none';
+        if (btn) btn.disabled = false;
+    }
+}
+
+function renderVideoPartsList(parts) {
+    const partsCard = document.getElementById('video-parts-card');
+    const partsCount = document.getElementById('video-parts-count');
+    const partsList = document.getElementById('video-parts-list');
+
+    if (!partsCard || !partsList || !parts || parts.length === 0) {
+        if (partsCard) partsCard.style.display = 'none';
+        return;
+    }
+
+    partsCard.style.display = 'block';
+    const durMinsFirst = parts[0]?.duration ? Math.round(parts[0].duration / 60) : 60;
+    if (partsCount) partsCount.textContent = `${parts.length} Parts (~${durMinsFirst}m each)`;
+
+    partsList.innerHTML = '';
+    parts.forEach(p => {
+        const card = document.createElement('div');
+        card.className = 'part-episode-card';
+        card.style.cssText = `
+            background: rgba(15, 23, 42, 0.65);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            transition: all 0.2s ease;
+        `;
+
+        const durMins = Math.round(p.duration / 60);
+        const sizeStr = p.size_mb > 0 ? `${p.size_mb} MB` : '';
+
+        card.innerHTML = `
+            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                <div>
+                    <span style="display: inline-block; padding: 2px 8px; border-radius: 4px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; font-size: 11px; font-weight: 700; text-transform: uppercase;">
+                        Part ${p.part_number}
+                    </span>
+                    <h5 style="margin: 6px 0 2px; font-size: 13px; font-weight: 600; color: #fff;">
+                        ${p.start_time} - ${p.end_time}
+                    </h5>
+                    <span style="font-size: 11px; color: var(--text-muted);">
+                        ⏱️ ${durMins} mins ${sizeStr ? '• 💾 ' + sizeStr : ''}
+                    </span>
+                </div>
+                <button class="btn-ghost btn-xs" onclick="playPartInPlayer('${p.download_url}', '${p.title}')" title="Play Part in Player" style="padding: 4px 8px; border: 1px solid rgba(255,255,255,0.1);">
+                    <i class="ph ph-play" style="color: var(--accent-emerald);"></i> Play
+                </button>
+            </div>
+            <div style="display: flex; gap: 6px; margin-top: auto; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;">
+                <a href="${p.download_url}" download="${p.filename}" class="btn-primary btn-xs" style="flex: 1; text-align: center; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding: 6px 10px;">
+                    <i class="ph ph-download-simple"></i> MP4
+                </a>
+                ${p.srt_url ? `
+                <a href="${p.srt_url}" download="${p.filename.replace('.mp4', '.srt')}" class="btn-secondary btn-xs" style="text-decoration: none; display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px;" title="Download Khmer Subtitles">
+                    <i class="ph ph-file-text"></i> SRT
+                </a>` : ''}
+            </div>
+        `;
+        partsList.appendChild(card);
+    });
+}
+
+function playPartInPlayer(videoUrl, partTitle) {
+    const videoPlayer = document.getElementById('dubbed-video-player');
+    if (!videoPlayer) return;
+
+    videoPlayer.src = videoUrl;
+    videoPlayer.play().catch(() => {});
+    showToast(`▶ Playing ${partTitle}`, "info");
+
+    const playerCard = document.querySelector('.player-container');
+    if (playerCard) {
+        playerCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 }

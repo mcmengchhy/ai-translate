@@ -11,6 +11,8 @@ from typing import Dict, Any, Optional, List
 import httpx
 import yt_dlp
 
+from .bilibili_auth import get_bilibili_cookie_header, get_bilibili_cookie_file
+
 logger = logging.getLogger(__name__)
 
 ROOT_PROJECT_DIR = Path(__file__).resolve().parent.parent.parent.parent
@@ -69,9 +71,18 @@ async def download_bilibili_direct(
     Downloads Bilibili video directly using Bilibili's official HTML5 API with
     HTTP Range chunking or full stream.
     """
-    headers = {"User-Agent": "curl/8.7.1"}
+    cookie_str = get_bilibili_cookie_header()
+    req_headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": "https://www.bilibili.com/",
+    }
+    if cookie_str:
+        req_headers["Cookie"] = cookie_str
+        logger.info(f"Authenticating Bilibili direct download for {bvid} with user session cookies.")
+    else:
+        logger.info(f"Downloading Bilibili {bvid} as guest (login recommended for faster speeds & 1080P).")
     
-    async with httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0)) as client:
+    async with httpx.AsyncClient(headers=req_headers, timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0)) as client:
         # 1. Fetch metadata (Title, CID, Duration)
         meta_url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
         resp = await client.get(meta_url)
@@ -89,29 +100,45 @@ async def download_bilibili_direct(
         pic = data.get("pic", "")
 
         # 2. Fetch HTML5 play stream URL
-        play_url = f"https://api.bilibili.com/x/player/playurl?bvid={bvid}&cid={cid}&qn=16&type=mp4&platform=html5"
-        play_resp = await client.get(play_url)
-        play_data = play_resp.json()
-        
-        if play_data.get("code") != 0 or not play_data.get("data", {}).get("durl"):
-            raise RuntimeError("Could not retrieve Bilibili play stream URL")
+        # For authenticated users, try 1080P/720P qualities first, falling back to 360P gracefully
+        play_data = {}
+        target_qns = [80, 64, 32, 16] if cookie_str else [16]
+        for qn_try in target_qns:
+            play_url = f"https://api.bilibili.com/x/player/playurl?bvid={bvid}&cid={cid}&qn={qn_try}&type=mp4&platform=html5&high_quality=1"
+            try:
+                play_resp = await client.get(play_url)
+                if play_resp.status_code == 200:
+                    pj = play_resp.json()
+                    if pj.get("code") == 0 and pj.get("data", {}).get("durl"):
+                        play_data = pj
+                        logger.info(f"Retrieved Bilibili stream at quality qn={qn_try} for {bvid}")
+                        break
+            except Exception as ex:
+                logger.warning(f"Failed playurl check qn={qn_try}: {ex}")
+                continue
+
+        if not play_data or not play_data.get("data", {}).get("durl"):
+            raise RuntimeError(f"Could not retrieve direct Bilibili MP4 play stream URL for {bvid}. Delegating to yt-dlp...")
 
         durl = play_data["data"]["durl"][0]
         mp4_stream_url = durl["url"]
         stream_size = durl.get("size", 0)
 
         # 3. Stream direct to MP4 using FFmpeg (fast, losslessly copies audio/video with valid MP4 container)
-        if max_clip_seconds and max_clip_seconds > 0:
+        # 3. Stream direct to MP4
+        is_clip = bool(max_clip_seconds and max_clip_seconds > 0 and max_clip_seconds < duration)
+        if is_clip:
             final_video_path = output_dir / f"{bvid}_clip{max_clip_seconds}.mp4"
         else:
             final_video_path = output_dir / f"{bvid}.mp4"
 
-        # If full video already downloaded and complete, reuse it immediately
-        if (not max_clip_seconds or max_clip_seconds == 0) and final_video_path.exists():
+        # If file already downloaded and complete on disk, reuse it immediately
+        if final_video_path.exists():
             from .dubber import get_media_duration
             existing_dur = get_media_duration(str(final_video_path))
-            if existing_dur >= duration * 0.90:
-                logger.info(f"Full video already downloaded on disk ({existing_dur:.1f}s). Skipping re-download.")
+            target_check = max_clip_seconds if is_clip else duration
+            if existing_dur >= target_check * 0.90:
+                logger.info(f"Video already fully downloaded on disk ({existing_dur:.1f}s). Skipping re-download.")
                 return {
                     "id": bvid,
                     "title": title,
@@ -124,124 +151,207 @@ async def download_bilibili_direct(
                     "platform": "Bilibili",
                 }
             else:
-                logger.warning(f"Existing file on disk is incomplete ({existing_dur:.1f}s / {duration}s). Removing and re-downloading...")
+                logger.warning(f"Existing file on disk is incomplete ({existing_dur:.1f}s / {target_check}s). Removing and re-downloading...")
                 final_video_path.unlink(missing_ok=True)
 
-        # For multi-hour or long videos (> 1800s), Bilibili's unauthenticated single-stream HTML5 endpoint
-        # automatically severs/times out the connection after ~20-50 minutes.
-        # Delegate immediately to chunked yt-dlp to avoid wasting time on truncated downloads!
-        if duration > 1800 and (not max_clip_seconds or max_clip_seconds == 0 or max_clip_seconds > 1800):
-            logger.info(
-                f"Bilibili video is long ({duration}s > 1800s). Direct unchunked stream will be truncated by CDN. "
-                f"Delegating immediately to chunked yt-dlp..."
+        if is_clip:
+            # Fast clip streaming via FFmpeg (-t max_clip_seconds)
+            headers_str = (
+                "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
+                "Referer: https://www.bilibili.com/\r\n"
             )
-            raise RuntimeError(f"Long Bilibili video ({duration}s) requires chunked multi-part downloader.")
+            if cookie_str:
+                headers_str += f"Cookie: {cookie_str}\r\n"
 
-        headers_str = "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nReferer: https://www.bilibili.com/\r\n"
-        cmd = [
-            "ffmpeg", "-y",
-            "-reconnect", "1",
-            "-reconnect_at_eof", "1",
-            "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "5",
-            "-headers", headers_str,
-            "-i", mp4_stream_url
-        ]
-        if max_clip_seconds and max_clip_seconds > 0 and max_clip_seconds < duration:
             clip_seconds = max_clip_seconds
-            cmd.extend(["-t", str(clip_seconds)])
-            logger.info(f"Streaming Bilibili clip ({max_clip_seconds}s) for {bvid} directly via FFmpeg...")
+            logger.info(f"Streaming Bilibili clip ({clip_seconds}s) for {bvid} directly via FFmpeg...")
+            cmd = [
+                "ffmpeg", "-y",
+                "-reconnect", "1",
+                "-reconnect_at_eof", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "5",
+                "-headers", headers_str,
+                "-i", mp4_stream_url,
+                "-t", str(clip_seconds),
+                "-c", "copy", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats",
+                str(final_video_path)
+            ]
+
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+
+            target_dur = clip_seconds
+            last_progress_time = 0
+            current_us = 0
+            speed_str = ""
+            total_size_bytes = 0
+
+            while True:
+                try:
+                    line = await process.stdout.readline()
+                    if not line:
+                        break
+                except (OSError, asyncio.CancelledError):
+                    break
+                line_str = line.decode("utf-8", errors="ignore").strip()
+                if "=" in line_str:
+                    k, v = line_str.split("=", 1)
+                    k, v = k.strip(), v.strip()
+                    if k in ("out_time_us", "out_time_ms"):
+                        try:
+                            current_us = float(v)
+                        except ValueError:
+                            pass
+                    elif k == "speed":
+                        speed_str = v
+                    elif k == "total_size":
+                        try:
+                            total_size_bytes = int(v)
+                        except ValueError:
+                            pass
+                    elif k == "progress" and v == "continue":
+                        cur_sec = current_us / 1000000.0 if current_us > 1000 else current_us
+                        now = time.time()
+                        if on_progress and (now - last_progress_time >= 0.4):
+                            last_progress_time = now
+                            pct = min(99.0, max(1.0, (cur_sec / max(1.0, target_dur)) * 100))
+                            speed_disp = speed_str if speed_str and speed_str != "N/A" else "Streaming"
+                            speed_mult = 1.0
+                            if "x" in speed_disp:
+                                try:
+                                    speed_mult = float(speed_disp.replace("x", ""))
+                                except ValueError:
+                                    speed_mult = 1.0
+                            eta_val = max(0, (target_dur - cur_sec) / max(0.1, speed_mult))
+                            eta_disp = f"{int(eta_val)}s" if eta_val > 0 else "< 1s"
+                            if total_size_bytes > 0:
+                                mb_downloaded = total_size_bytes / (1024 * 1024)
+                                detail_disp = f"{mb_downloaded:.1f} MB ({cur_sec:.0f}s / {target_dur:.0f}s)"
+                            else:
+                                detail_disp = f"{cur_sec:.0f}s / {target_dur:.0f}s"
+                            on_progress(pct, speed_disp, eta_disp, detail_disp)
+
+            await process.wait()
+            if process.returncode != 0:
+                raise RuntimeError(f"FFmpeg download failed with returncode {process.returncode}")
+
+            if on_progress:
+                on_progress(100.0, "Ready", "0s", f"{target_dur:.0f}s / {target_dur:.0f}s")
+
+            from .dubber import get_media_duration
+            actual_dur = get_media_duration(str(final_video_path))
+            return {
+                "id": bvid,
+                "title": title,
+                "duration": actual_dur,
+                "full_duration": duration,
+                "thumbnail": pic,
+                "video_path": str(final_video_path),
+                "sub_path": None,
+                "url": f"https://www.bilibili.com/video/{bvid}",
+                "platform": "Bilibili",
+            }
+
         else:
-            clip_seconds = duration
-            logger.info(f"Streaming full Bilibili video {bvid} ({duration}s) directly via FFmpeg...")
+            # Full Video: download via fast, resilient HTTP Range Chunking
+            # Bypasses single-socket 20-minute CDN timeouts, downloads at 7-12 MB/s, and supports resuming
+            part_path = output_dir / f"{bvid}.mp4.part"
+            chunk_size = 10 * 1024 * 1024  # 10MB chunk
+            total_size = stream_size or durl.get("size", 0)
 
-        cmd.extend(["-c", "copy", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(final_video_path)])
+            if not total_size or total_size == 0:
+                try:
+                    probe_headers = {"Referer": "https://www.bilibili.com/", "User-Agent": req_headers["User-Agent"], "Range": "bytes=0-0"}
+                    if cookie_str:
+                        probe_headers["Cookie"] = cookie_str
+                    probe_resp = await client.get(mp4_stream_url, headers=probe_headers)
+                    cr = probe_resp.headers.get("content-range", "")
+                    if "/" in cr:
+                        total_size = int(cr.split("/")[-1])
+                except Exception as ex:
+                    logger.warning(f"Failed to probe file size: {ex}")
 
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL
-        )
+            downloaded = part_path.stat().st_size if part_path.exists() else 0
+            if total_size and downloaded >= total_size:
+                downloaded = 0  # Re-download if old part was corrupt
 
-        target_dur = clip_seconds
-        last_progress_time = 0
-        current_us = 0
-        speed_str = ""
-        total_size_bytes = 0
+            size_mb = f"{total_size/(1024*1024):.1f} MB" if total_size else "unknown size"
+            logger.info(f"Downloading full Bilibili video {bvid} ({size_mb}, {duration}s) via HTTP Range Chunks...")
+            t_start = time.time()
+            last_progress_time = 0
 
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            line_str = line.decode("utf-8", errors="ignore").strip()
-            if "=" in line_str:
-                k, v = line_str.split("=", 1)
-                k = k.strip()
-                v = v.strip()
-                if k in ("out_time_us", "out_time_ms"):
-                    try:
-                        current_us = float(v)
-                    except ValueError:
-                        pass
-                elif k == "speed":
-                    speed_str = v
-                elif k == "total_size":
-                    try:
-                        total_size_bytes = int(v)
-                    except ValueError:
-                        pass
-                elif k == "progress" and v == "continue":
-                    cur_sec = current_us / 1000000.0 if current_us > 1000 else current_us
+            with open(part_path, "ab" if downloaded > 0 else "wb") as f:
+                while True:
+                    if total_size and downloaded >= total_size:
+                        break
+                    chunk_end = (downloaded + chunk_size - 1)
+                    if total_size:
+                        chunk_end = min(total_size - 1, chunk_end)
+
+                    chunk_headers = {
+                        "Referer": "https://www.bilibili.com/",
+                        "User-Agent": req_headers["User-Agent"],
+                        "Range": f"bytes={downloaded}-{chunk_end}",
+                    }
+                    if cookie_str:
+                        chunk_headers["Cookie"] = cookie_str
+
+                    chunk_data = None
+                    for attempt in range(5):
+                        try:
+                            resp = await client.get(mp4_stream_url, headers=chunk_headers)
+                            if resp.status_code in (200, 206):
+                                chunk_data = resp.content
+                                break
+                            elif resp.status_code == 416:  # Range Not Satisfiable -> reached EOF
+                                break
+                            await asyncio.sleep(1)
+                        except Exception as ex:
+                            if attempt == 4:
+                                raise RuntimeError(f"Chunk download failed after 5 retries at offset {downloaded}: {ex}")
+                            await asyncio.sleep(1)
+
+                    if not chunk_data:
+                        break
+
+                    f.write(chunk_data)
+                    f.flush()
+                    downloaded += len(chunk_data)
+
                     now = time.time()
                     if on_progress and (now - last_progress_time >= 0.4):
                         last_progress_time = now
-                        pct = min(99.0, max(1.0, (cur_sec / max(1.0, target_dur)) * 100))
-                        speed_disp = speed_str if speed_str and speed_str != "N/A" else "Streaming"
-                        speed_mult = 1.0
-                        if "x" in speed_disp:
-                            try:
-                                speed_mult = float(speed_disp.replace("x", ""))
-                            except ValueError:
-                                speed_mult = 1.0
-                        eta_val = max(0, (target_dur - cur_sec) / max(0.1, speed_mult))
+                        pct = (downloaded / max(1, total_size) * 100) if total_size else 50.0
+                        elapsed = max(0.1, now - t_start)
+                        speed_mb = (downloaded / (1024 * 1024)) / elapsed
+                        speed_disp = f"{speed_mb:.1f} MB/s" if speed_mb > 0 else ""
+                        eta_val = max(0, (total_size - downloaded) / (1024 * 1024) / max(0.1, speed_mb)) if total_size else 0
                         eta_disp = f"{int(eta_val)}s" if eta_val > 0 else "< 1s"
-                        if total_size_bytes > 0:
-                            mb_downloaded = total_size_bytes / (1024 * 1024)
-                            detail_disp = f"{mb_downloaded:.1f} MB ({cur_sec:.0f}s / {target_dur:.0f}s)"
-                        else:
-                            detail_disp = f"{cur_sec:.0f}s / {target_dur:.0f}s"
-                        on_progress(pct, speed_disp, eta_disp, detail_disp)
+                        detail_disp = f"{downloaded/(1024*1024):.1f} MB / {total_size/(1024*1024):.1f} MB" if total_size else f"{downloaded/(1024*1024):.1f} MB"
+                        on_progress(min(99.0, max(1.0, pct)), speed_disp, eta_disp, detail_disp)
 
-        await process.wait()
-        if process.returncode != 0:
-            raise RuntimeError(f"FFmpeg download failed with returncode {process.returncode}")
+            part_path.replace(final_video_path)
 
-        if on_progress:
-            on_progress(100.0, "Ready", "0s", f"{target_dur:.0f}s / {target_dur:.0f}s")
+            if on_progress:
+                on_progress(100.0, "Ready", "0s", f"{total_size/(1024*1024):.1f} MB Complete")
 
-        from .dubber import get_media_duration
-        actual_dur = get_media_duration(str(final_video_path))
-        target_dur = min(max_clip_seconds, duration) if (max_clip_seconds and max_clip_seconds > 0) else duration
-
-        if actual_dur < target_dur * 0.90:
-            logger.warning(
-                f"Bilibili direct stream was truncated by CDN ({actual_dur:.1f}s / expected {target_dur}s). "
-                f"Removing incomplete file and falling back to yt-dlp..."
-            )
-            final_video_path.unlink(missing_ok=True)
-            raise RuntimeError(f"Bilibili stream truncated by CDN: received {actual_dur:.1f}s of {target_dur}s")
-
-        return {
-            "id": bvid,
-            "title": title,
-            "duration": actual_dur,
-            "full_duration": duration,
-            "thumbnail": pic,
-            "video_path": str(final_video_path),
-            "sub_path": None,
-            "url": f"https://www.bilibili.com/video/{bvid}",
-            "platform": "Bilibili",
-        }
+            from .dubber import get_media_duration
+            actual_dur = get_media_duration(str(final_video_path))
+            return {
+                "id": bvid,
+                "title": title,
+                "duration": actual_dur or duration,
+                "full_duration": duration,
+                "thumbnail": pic,
+                "video_path": str(final_video_path),
+                "sub_path": None,
+                "url": f"https://www.bilibili.com/video/{bvid}",
+                "platform": "Bilibili",
+            }
 
 
 async def download_direct_media(
@@ -282,6 +392,7 @@ async def download_video(
     # 1. Bilibili Direct API Optimization
     bvid = extract_bilibili_bvid(url)
     if bvid:
+        clean_url = f"https://www.bilibili.com/video/{bvid}"
         try:
             logger.info(f"Detected Bilibili BV ID: {bvid}. Using direct fast API...")
             res = await download_bilibili_direct(bvid, dest_dir, max_clip_seconds=max_clip_seconds, on_progress=on_progress)
@@ -289,8 +400,7 @@ async def download_video(
             return res
         except Exception as e:
             logger.warning(f"Direct Bilibili download failed: {e}. Falling back to yt-dlp...")
-            if not url.startswith("http"):
-                url = f"https://www.bilibili.com/video/{bvid}"
+            url = clean_url
 
     # 2. Universal Downloader (YouTube, TikTok, Facebook, Twitter, Douyin, Vimeo, Reddit, etc.)
     from .dubber import get_media_duration
@@ -299,8 +409,18 @@ async def download_video(
     node_bin = shutil.which("node") or "/opt/homebrew/bin/node"
     has_node = bool(node_bin and Path(node_bin).exists())
 
+    bilibili_cookie_file = get_bilibili_cookie_file()
+    is_bilibili = (platform == "Bilibili") or bool(extract_bilibili_bvid(url))
+
+    # Format selection: allow 1080P if authenticated Bilibili cookies exist or 720P default
+    target_format = (
+        'bestvideo[height<=1080][vcodec^=avc]+bestaudio[acodec^=mp4a]/bestvideo[height<=1080]+bestaudio/bestvideo*+bestaudio/best'
+        if (is_bilibili and bilibili_cookie_file)
+        else 'bestvideo[height<=720][vcodec^=avc]+bestaudio[acodec^=mp4a]/bestvideo[height<=720]+bestaudio/bestvideo*+bestaudio/best'
+    )
+
     ydl_opts: Dict[str, Any] = {
-        'format': 'bestvideo[height<=720][vcodec^=avc]+bestaudio[acodec^=mp4a]/bestvideo[height<=720]+bestaudio/bestvideo*+bestaudio/best',
+        'format': target_format,
         'merge_output_format': 'mp4',
         'outtmpl': str(dest_dir / '%(id)s.%(ext)s'),
         'writesubtitles': True,
@@ -309,15 +429,20 @@ async def download_video(
         'subtitlesformat': 'srt/vtt/best',
         'nocheckcertificate': True,
         'ignoreerrors': False,
-        'quiet': False,
-        'http_chunk_size': 10485760,  # 10MB chunking prevents CDN socket dropouts on large/multi-hour streams
-        'concurrent_fragment_downloads': 4,
+        'quiet': True,              # Prevent [Errno 5] Input/output error on detached stdout/terminal
+        'no_warnings': True,
+        'noplaylist': True,         # Single video/part only
+        'concurrent_fragment_downloads': 4, # Stable concurrent fragment download
         'continuedl': True,  # Resume partially downloaded files (.part) seamlessly
         'nopart': False,
         'retries': 30,
         'fragment_retries': 30,
         'buffersize': 1048576,
     }
+
+    if is_bilibili and bilibili_cookie_file:
+        ydl_opts['cookiefile'] = str(bilibili_cookie_file)
+        logger.info(f"Using authenticated Bilibili cookies from {bilibili_cookie_file}")
 
     if has_node:
         ydl_opts['js_runtimes'] = {'node': {}}
@@ -417,13 +542,45 @@ async def download_video(
     full_duration = info.get('duration', 0)
     thumbnail = info.get('thumbnail', '')
 
+    # If info is a playlist (multi-part Bilibili video), take the first entry
+    if 'entries' in info and info['entries']:
+        entries = [e for e in info['entries'] if e]
+        if entries:
+            entry = entries[0]
+            video_id = entry.get('id', video_id)
+            title = entry.get('title', title)
+            full_duration = entry.get('duration', full_duration)
+            thumbnail = entry.get('thumbnail', thumbnail)
+
     # Locate downloaded video file
     video_path = dest_dir / f"{video_id}.mp4"
     if not video_path.exists():
-        for candidate in dest_dir.glob(f"{video_id}.*"):
-            if candidate.suffix in ['.mp4', '.mkv', '.webm', '.mov']:
-                video_path = candidate
-                break
+        valid_exts = ['.mp4', '.mkv', '.webm', '.mov', '.m4v']
+        candidates = []
+
+        # Check requested_downloads from yt-dlp info
+        if 'requested_downloads' in info:
+            for rd in info['requested_downloads']:
+                fp = rd.get('filepath') or rd.get('_filename')
+                if fp and Path(fp).exists():
+                    candidates.append(Path(fp))
+
+        # Check single file path
+        if info.get('_filename') and Path(info['_filename']).exists():
+            candidates.append(Path(info['_filename']))
+
+        # Match files containing video_id or BV ID (e.g. BV1m7Yr6mEYF_p1.mp4)
+        if not candidates:
+            bvid_match = extract_bilibili_bvid(url) or video_id
+            candidates = [
+                p for p in dest_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in valid_exts and (video_id in p.name or bvid_match in p.name)
+            ]
+
+        if candidates:
+            # Sort: prioritize part 1 (_p1) or most recently modified
+            candidates.sort(key=lambda p: (0 if "_p1" in p.name.lower() else 1, -p.stat().st_mtime))
+            video_path = candidates[0]
 
     if not video_path.exists():
         raise RuntimeError(f"Downloaded video file not found for {video_id}")

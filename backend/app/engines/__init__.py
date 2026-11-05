@@ -13,10 +13,11 @@ engines: Dict[str, BaseTranslationEngine] = {
 }
 
 
-def get_engine(name: str = "free") -> BaseTranslationEngine:
+def get_engine(name: str = "free", api_key: str = None) -> BaseTranslationEngine:
     """Retrieve an engine by name, falling back to free engine if not found."""
     import os
     engine = engines.get(name.lower(), engines["free"])
-    if isinstance(engine, GeminiEngine) and not engine.api_key:
-        engine.set_api_key(os.getenv("GEMINI_API_KEY", ""))
+    eff_key = api_key or os.getenv("GEMINI_API_KEY", "")
+    if isinstance(engine, GeminiEngine) and eff_key:
+        engine.set_api_key(eff_key)
     return engine
