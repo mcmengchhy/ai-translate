@@ -3,7 +3,7 @@
 import json
 import logging
 from typing import List
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from .models import (
@@ -14,10 +14,7 @@ from .models import (
     LanguageInfo,
     SystemStatusResponse,
 )
-from ..engines import get_engine, engines
-from ..engines.gemini_engine import GeminiEngine
-from ..engines.openai_engine import OpenAIEngine
-from ..core import config
+from ..engines import engines, resolve_engine
 from ..khmer import (
     normalize_khmer_unicode,
     convert_numerals,
@@ -28,12 +25,6 @@ from ..khmer import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
-
-# Update engines with env keys on startup
-if config.GEMINI_API_KEY:
-    engines["gemini"] = GeminiEngine(api_key=config.GEMINI_API_KEY, model=config.DEFAULT_GEMINI_MODEL)
-if config.OPENAI_API_KEY:
-    engines["openai"] = OpenAIEngine(api_key=config.OPENAI_API_KEY, base_url=config.OPENAI_BASE_URL)
 
 SUPPORTED_LANGUAGES = [
     LanguageInfo(code="km", name="Khmer", native_name="ភាសាខ្មែរ"),
@@ -47,19 +38,6 @@ SUPPORTED_LANGUAGES = [
     LanguageInfo(code="de", name="German", native_name="Deutsch"),
     LanguageInfo(code="es", name="Spanish", native_name="Español"),
 ]
-
-
-def resolve_engine(req_engine: str, api_key: str | None = None):
-    """Determine best engine based on configuration."""
-    if req_engine == "auto":
-        if api_key:
-            return engines["gemini"]
-        if engines["gemini"].is_configured():
-            return engines["gemini"]
-        if engines["openai"].is_configured():
-            return engines["openai"]
-        return engines["free"]
-    return get_engine(req_engine)
 
 
 def post_process_translation(text: str, target_lang: str, req: TranslateRequest) -> str:
@@ -92,10 +70,11 @@ async def translate_text(req: TranslateRequest):
             characters_count=0,
         )
 
-    engine = resolve_engine(req.engine, req.api_key)
+    engine = resolve_engine(req.engine, req.api_key, req.base_url)
     options = {
         "api_key": req.api_key,
         "model": req.model,
+        "base_url": req.base_url,
         "context": req.context,
     }
 
@@ -149,10 +128,11 @@ async def translate_text_stream(req: TranslateRequest):
             yield json.dumps({"chunk": "", "done": True})
         return EventSourceResponse(empty_stream())
 
-    engine = resolve_engine(req.engine, req.api_key)
+    engine = resolve_engine(req.engine, req.api_key, req.base_url)
     options = {
         "api_key": req.api_key,
         "model": req.model,
+        "base_url": req.base_url,
         "context": req.context,
     }
 
@@ -205,9 +185,8 @@ async def system_status():
     return SystemStatusResponse(
         status="healthy",
         engines={
-            "gemini": engines["gemini"].is_configured(),
             "openai": engines["openai"].is_configured(),
             "free": True,
         },
-        default_engine="gemini" if engines["gemini"].is_configured() else "free",
+        default_engine=resolve_engine().name,
     )

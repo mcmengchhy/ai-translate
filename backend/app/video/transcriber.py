@@ -3,9 +3,17 @@
 import asyncio
 import logging
 import subprocess
+import hashlib
+import json
+import math
+import copy
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import numpy as np
+
+from .job_identity import media_hash, atomic_json_write
+
+TRANSCRIPT_CACHE_DIR = Path(__file__).resolve().parents[3] / "storage" / "transcripts"
 
 logger = logging.getLogger(__name__)
 
@@ -49,99 +57,152 @@ from .subtitle_reader import (
 )
 
 
+def fuse_speech_and_subtitles(speech_segments, subtitle_segments):
+    """Keep subtitle wording and aligned spoken wording; retain uncovered speech."""
+    combined = []
+    covered_speech = set()
+    for subtitle in subtitle_segments:
+        cue = dict(subtitle)
+        matching = []
+        for index, speech in enumerate(speech_segments):
+            overlap = min(float(cue["end"]), float(speech["end"])) - max(float(cue["start"]), float(speech["start"]))
+            if overlap > 0:
+                matching.append(speech.get("asr_text") or speech.get("text", ""))
+                if overlap >= min(0.2, (float(speech["end"]) - float(speech["start"])) * 0.5):
+                    covered_speech.add(index)
+        cue["subtitle_text"] = cue.get("text", "")
+        cue["asr_text"] = " ".join(text.strip() for text in matching if text.strip())
+        combined.append(cue)
+    combined.extend(dict(speech) for index, speech in enumerate(speech_segments) if index not in covered_speech)
+    combined.sort(key=lambda cue: float(cue["start"]))
+    for index, cue in enumerate(combined, start=1):
+        cue["id"] = index
+    return combined
+
+
+def _read_transcript_cache(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
+            return None
+        if not isinstance(data.get("language"), str) or not math.isfinite(float(data["duration"])) or float(data["duration"]) < 0:
+            return None
+        for cue in data["segments"]:
+            if not isinstance(cue.get("text"), str) or not all(
+                math.isfinite(float(cue[field])) for field in ("start", "end")
+            ) or float(cue["end"]) < float(cue["start"]):
+                return None
+        return data
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
 async def transcribe_video_audio(
     video_path: str,
     language: Optional[str] = None,
     external_subtitle_path: Optional[str] = None,
     on_ocr_progress=None,
+    on_speech_progress=None,
+    cache_revision=None,
 ) -> Dict[str, Any]:
-    """
-    Extracts speech timestamps and dialogue content from video.
-    
-    1. Checks for user-provided external subtitle file (.srt, .vtt).
-    2. Probes video container for embedded soft subtitle streams.
-    3. Runs Faster-Whisper to detect speech activity and timing.
-    4. Runs on-screen hardsub OCR (RapidOCR) on video frames to replace
-       noisy audio homophones with exact on-screen characters.
+    """Reuse content-addressed speech/OCR checkpoints and report both stages.
+
+    Complete speech is checkpointed before OCR starts. A restart during OCR can
+    therefore reuse Whisper's work; identical uploads reuse the final transcript.
     """
     def _sync_transcribe():
-        # 1. External subtitle file if provided
-        if external_subtitle_path and Path(external_subtitle_path).exists():
-            parsed = parse_srt_or_vtt(external_subtitle_path)
-            if parsed:
-                logger.info(f"Using {len(parsed)} cues from external subtitle file: {external_subtitle_path}")
-                return {
-                    "language": language or "zh",
-                    "language_probability": 1.0,
-                    "segments": parsed,
-                    "source": "external_file",
-                }
-
-        # 2. Embedded soft subtitles if available in container
-        soft_subs = extract_embedded_soft_subtitles(video_path)
-        if soft_subs:
-            logger.info(f"Using {len(soft_subs)} cues from container soft subtitles.")
-            return {
-                "language": language or "zh",
-                "language_probability": 1.0,
-                "segments": soft_subs,
-                "source": "container_softsub",
-            }
-
-        # 3. Audio speech recognition via Faster-Whisper
-        audio_array, temp_pcm = extract_pcm_from_video(video_path)
+        cache_path = speech_path = None
         try:
-            duration = len(audio_array) / 16000.0
+            if Path(video_path).is_file():
+                subtitle_digest = media_hash(external_subtitle_path) if external_subtitle_path and Path(external_subtitle_path).is_file() else ""
+                digest = media_hash(video_path)
+                revision = [cache_revision] if cache_revision else []
+                key = hashlib.sha256(json.dumps(["speech-ocr-v1-base", digest, subtitle_digest, language, *revision]).encode()).hexdigest()
+                speech_key = hashlib.sha256(json.dumps(["speech-v1-base", digest, language, *revision]).encode()).hexdigest()
+                cache_path = TRANSCRIPT_CACHE_DIR / f"{key}.json"
+                speech_path = TRANSCRIPT_CACHE_DIR / f"{speech_key}.speech.json"
+                cached = _read_transcript_cache(cache_path)
+                if cached is not None:
+                    cached["cache_hit"] = True
+                    if on_speech_progress:
+                        on_speech_progress(cached.get("duration", 0), cached.get("duration", 0))
+                    if on_ocr_progress:
+                        on_ocr_progress(len(cached["segments"]), len(cached["segments"]))
+                    return cached
+        except OSError:
+            logger.warning("Transcription cache unavailable; processing the source", exc_info=True)
 
-            model = get_whisper_model("base")
-            logger.info(f"Transcribing {duration:.1f}s ({duration/3600:.1f}h) audio with faster-whisper...")
+        subtitle_segments = []
+        subtitle_source = None
+        if external_subtitle_path and Path(external_subtitle_path).exists():
+            subtitle_segments = parse_srt_or_vtt(external_subtitle_path)
+            if subtitle_segments:
+                subtitle_source = "external_file"
+        if not subtitle_segments:
+            subtitle_segments = extract_embedded_soft_subtitles(video_path) or []
+            if subtitle_segments:
+                subtitle_source = "container_softsub"
 
-            # Using vad_filter=False to prevent Silero VAD from deleting dialogue over background music/shouts.
-            # condition_on_previous_text=False prevents Whisper hallucination loops during pauses.
-            # no_speech_threshold=0.6 filters pure non-speech background audio.
-            segments_gen, info = model.transcribe(
-                audio_array,
-                language=language if language and language != "auto" else None,
-                beam_size=5,
-                vad_filter=False,
-                condition_on_previous_text=False,
-                no_speech_threshold=0.6,
-            )
-
-            segments_list = []
-            for i, segment in enumerate(segments_gen):
-                text = segment.text.strip()
-                if text:
-                    segments_list.append({
-                        "id": i + 1,
-                        "start": round(segment.start, 2),
-                        "end": round(segment.end, 2),
-                        "text": text,
-                    })
-
-            # 4. Enhance speech segments with on-screen burned-in subtitle OCR (Hardsubs)
-            if segments_list:
-                logger.info(f"Checking for on-screen burned-in subtitles (Hardsubs) across {len(segments_list)} segments...")
-                segments_list = enhance_segments_with_hardsubs(
-                    video_path,
-                    segments_list,
-                    progress_callback=on_ocr_progress
+        speech = _read_transcript_cache(speech_path) if speech_path else None
+        if speech is None:
+            try:
+                audio_array, temp_pcm = extract_pcm_from_video(video_path)
+            except subprocess.CalledProcessError:
+                if not subtitle_segments:
+                    raise
+                probe = subprocess.run([
+                    "ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+                    "stream=index", "-of", "csv=p=0", str(video_path),
+                ], capture_output=True, text=True, check=True)
+                if probe.stdout.strip():
+                    raise
+                return {
+                    "language": language or "auto", "language_probability": 0,
+                    "duration": max(float(seg["end"]) for seg in subtitle_segments),
+                    "segments": fuse_speech_and_subtitles([], subtitle_segments),
+                    "source": f"{subtitle_source}_without_audio",
+                }
+            try:
+                duration = len(audio_array) / 16000.0
+                model = get_whisper_model("base")
+                logger.info("Transcribing %.1fs audio with faster-whisper...", duration)
+                segments_gen, info = model.transcribe(
+                    audio_array, language=language if language and language != "auto" else None,
+                    beam_size=5, vad_filter=False, condition_on_previous_text=False, no_speech_threshold=.6,
                 )
+                segments_list = []
+                for index, segment in enumerate(segments_gen, 1):
+                    text = segment.text.strip()
+                    if text:
+                        segments_list.append({"id": index, "start": round(segment.start, 2),
+                                              "end": round(segment.end, 2), "text": text, "asr_text": text})
+                    if on_speech_progress:
+                        on_speech_progress(min(duration, segment.end), duration)
+                speech = {"language": info.language, "language_probability": round(info.language_probability, 2),
+                          "duration": round(duration, 2), "segments": segments_list}
+                if speech_path:
+                    atomic_json_write(speech_path, speech)
+            finally:
+                del audio_array
+                temp_pcm.unlink(missing_ok=True)
+        elif on_speech_progress:
+            on_speech_progress(speech["duration"], speech["duration"])
 
-            return {
-                "language": info.language,
-                "language_probability": round(info.language_probability, 2),
-                "duration": round(duration, 2),
-                "segments": segments_list,
-                "source": "speech_and_hardsub_ocr",
-            }
-        finally:
-            del audio_array
-            if temp_pcm.exists():
-                try:
-                    temp_pcm.unlink()
-                except Exception:
-                    pass
+        segments_list = copy.deepcopy(speech["segments"])
+        if subtitle_segments:
+            segments_list = fuse_speech_and_subtitles(segments_list, subtitle_segments)
+        elif segments_list:
+            segments_list = enhance_segments_with_hardsubs(video_path, segments_list, progress_callback=on_ocr_progress)
+        for segment in segments_list:
+            if segment.get("ocr_detected"):
+                segment["subtitle_text"] = segment.get("text", "")
+        result = {**speech, "segments": segments_list,
+                  "source": f"speech_and_{subtitle_source}" if subtitle_source else "speech_and_hardsub_ocr"}
+        if cache_path:
+            atomic_json_write(cache_path, result)
+        return result
 
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _sync_transcribe)
+    from .cache import cache_in_use
+    from .resources import run_blocking
+    with cache_in_use(Path(video_path).parent):
+        return await run_blocking(_sync_transcribe)

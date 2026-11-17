@@ -163,8 +163,6 @@ async function executeTranslation() {
     const sourceLang = document.getElementById('source-lang-select').value;
     const targetLang = document.getElementById('target-lang-select').value;
     const injectZwsp = document.getElementById('toggle-zwsp') ? document.getElementById('toggle-zwsp').checked : false;
-    const settings = getSavedSettings();
-
     // Cancel existing request if still pending
     if (currentAbortController) {
         currentAbortController.abort();
@@ -183,11 +181,9 @@ async function executeTranslation() {
                 text: sourceText,
                 source_lang: sourceLang,
                 target_lang: targetLang,
-                engine: settings.engine || 'auto',
+                ...getTranslationOptions(),
                 tone: activeTone,
-                inject_zwsp: injectZwsp,
-                api_key: settings.geminiKey || null,
-                model: settings.geminiModel || null
+                inject_zwsp: injectZwsp
             }),
             signal: currentAbortController.signal
         });
@@ -333,10 +329,9 @@ function openSettingsModal() {
     const settings = getSavedSettings();
 
     document.getElementById('setting-engine-select').value = settings.engine || 'auto';
-    document.getElementById('setting-gemini-key').value = settings.geminiKey || '';
-    document.getElementById('setting-gemini-model').value = settings.geminiModel || 'gemini-2.0-flash';
-    document.getElementById('setting-openai-key').value = settings.openaiKey || '';
-    document.getElementById('setting-openai-url').value = settings.openaiUrl || '';
+    document.getElementById('setting-openai-key').value = settings.openaiKey;
+    document.getElementById('setting-openai-url').value = settings.openaiUrl;
+    document.getElementById('setting-openai-model').value = settings.openaiModel;
 
     toggleEngineFormVisibility();
     modal.classList.add('active');
@@ -348,35 +343,18 @@ function closeSettingsModal() {
 
 function toggleEngineFormVisibility() {
     const engine = document.getElementById('setting-engine-select').value;
-    const geminiGroup = document.getElementById('gemini-key-group');
-    const modelGroup = document.getElementById('gemini-model-group');
-    const openaiGroup = document.getElementById('openai-key-group');
-
-    if (engine === 'openai') {
-        geminiGroup.style.display = 'none';
-        modelGroup.style.display = 'none';
-        openaiGroup.style.display = 'flex';
-    } else if (engine === 'free') {
-        geminiGroup.style.display = 'none';
-        modelGroup.style.display = 'none';
-        openaiGroup.style.display = 'none';
-    } else {
-        geminiGroup.style.display = 'flex';
-        modelGroup.style.display = 'flex';
-        openaiGroup.style.display = 'none';
-    }
+    document.getElementById('openai-key-group').style.display = engine === 'free' ? 'none' : 'flex';
 }
 
 document.getElementById('setting-engine-select')?.addEventListener('change', toggleEngineFormVisibility);
 
 function saveSettings() {
     const engine = document.getElementById('setting-engine-select').value;
-    const geminiKey = document.getElementById('setting-gemini-key').value.trim();
-    const geminiModel = document.getElementById('setting-gemini-model').value;
     const openaiKey = document.getElementById('setting-openai-key').value.trim();
     const openaiUrl = document.getElementById('setting-openai-url').value.trim();
+    const openaiModel = document.getElementById('setting-openai-model').value.trim();
 
-    const config = { engine, geminiKey, geminiModel, openaiKey, openaiUrl };
+    const config = { engine, openaiKey, openaiUrl, openaiModel };
     localStorage.setItem('khmer_translator_settings', JSON.stringify(config));
     closeSettingsModal();
     showToast("Settings saved successfully!", "success");
@@ -384,12 +362,36 @@ function saveSettings() {
 }
 
 function getSavedSettings() {
+    const defaults = { engine: 'auto', openaiKey: '', openaiUrl: '', openaiModel: '' };
     try {
         const item = localStorage.getItem('khmer_translator_settings');
-        return item ? JSON.parse(item) : { engine: 'auto', geminiKey: '', geminiModel: 'gemini-2.0-flash' };
+        if (!item) return defaults;
+        const stored = JSON.parse(item);
+        const settings = {
+            engine: ['auto', 'free', 'openai'].includes(stored.engine) ? stored.engine : 'auto',
+            openaiKey: typeof stored.openaiKey === 'string' ? stored.openaiKey : '',
+            openaiUrl: typeof stored.openaiUrl === 'string' ? stored.openaiUrl : '',
+            openaiModel: typeof stored.openaiModel === 'string' ? stored.openaiModel : ''
+        };
+        // Keep supported preferences and remove obsolete provider credentials.
+        if (JSON.stringify(settings) !== item) {
+            localStorage.setItem('khmer_translator_settings', JSON.stringify(settings));
+        }
+        return settings;
     } catch {
-        return { engine: 'auto', geminiKey: '', geminiModel: 'gemini-2.0-flash' };
+        return defaults;
     }
+}
+
+function getTranslationOptions() {
+    const settings = getSavedSettings();
+    const useProvider = settings.engine !== 'free';
+    return {
+        engine: settings.engine,
+        api_key: useProvider ? settings.openaiKey || null : null,
+        base_url: useProvider ? settings.openaiUrl || null : null,
+        model: useProvider ? settings.openaiModel || null : null
+    };
 }
 
 function loadSavedSettings() {
@@ -405,13 +407,10 @@ async function checkBackendStatus() {
         if (resp.ok) {
             const data = await resp.json();
             const settings = getSavedSettings();
-            const hasUserKey = Boolean(settings.geminiKey);
-            const isGeminiReady = data.engines.gemini || hasUserKey;
-
             const label = document.getElementById('current-engine-label');
-            if (settings.engine === 'gemini' || (settings.engine === 'auto' && isGeminiReady)) {
-                label.textContent = "Gemini 2.0 AI";
-            } else if (settings.engine === 'openai') {
+            const useOpenAI = settings.engine === 'openai' || (settings.engine === 'auto' &&
+                (settings.openaiKey || settings.openaiUrl || data.default_engine === 'openai'));
+            if (useOpenAI) {
                 label.textContent = "OpenAI / Ollama";
             } else {
                 label.textContent = "Free Engine";

@@ -2,6 +2,7 @@
 
 import json
 import logging
+from urllib.parse import urlsplit
 from typing import AsyncGenerator, Dict, Any, Optional
 import httpx
 
@@ -26,7 +27,23 @@ class OpenAIEngine(BaseTranslationEngine):
         self.model = model
 
     def is_configured(self) -> bool:
-        return bool(self.api_key or "localhost" in self.base_url or "127.0.0.1" in self.base_url)
+        return bool(self.api_key or urlsplit(self.base_url).hostname in ("localhost", "127.0.0.1", "::1"))
+
+    def request_settings(self, options: Optional[Dict[str, Any]] = None):
+        options = options or {}
+        base_url = (options.get("base_url") or self.base_url).rstrip("/")
+        # A custom endpoint must never receive the server's key for another provider.
+        key = options.get("api_key") or (self.api_key if base_url == self.base_url else "")
+        return key, base_url, options.get("model") or self.model
+
+    @staticmethod
+    def generation_options(base_url: str, model: str):
+        """Keep local Qwen translation requests focused on the final answer."""
+        endpoint = urlsplit(base_url)
+        if (endpoint.hostname in ("localhost", "127.0.0.1", "::1")
+                and endpoint.port == 11434 and model.lower().startswith("qwen3")):
+            return {"reasoning_effort": "none"}
+        return {}
 
     async def translate(
         self,
@@ -37,9 +54,8 @@ class OpenAIEngine(BaseTranslationEngine):
         options: Optional[Dict[str, Any]] = None,
     ) -> str:
         options = options or {}
-        key = options.get("api_key") or self.api_key
-        base_url = (options.get("base_url") or self.base_url).rstrip("/")
-        model = options.get("model") or self.model
+        key, base_url, model = self.request_settings(options)
+        local_options = self.generation_options(base_url, model)
 
         system_prompt = build_system_prompt(source_lang, target_lang, tone=tone)
         user_prompt = build_translation_user_prompt(text, context=options.get("context"))
@@ -55,9 +71,10 @@ class OpenAIEngine(BaseTranslationEngine):
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": 0.2,
+            **local_options,
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=180.0 if local_options else 60.0) as client:
             resp = await client.post(f"{base_url}/chat/completions", headers=headers, json=payload)
             if resp.status_code != 200:
                 raise RuntimeError(f"API Error ({resp.status_code}): {resp.text}")
@@ -82,9 +99,8 @@ class OpenAIEngine(BaseTranslationEngine):
         options: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         options = options or {}
-        key = options.get("api_key") or self.api_key
-        base_url = (options.get("base_url") or self.base_url).rstrip("/")
-        model = options.get("model") or self.model
+        key, base_url, model = self.request_settings(options)
+        local_options = self.generation_options(base_url, model)
 
         system_prompt = build_system_prompt(source_lang, target_lang, tone=tone)
         user_prompt = build_translation_user_prompt(text, context=options.get("context"))
@@ -101,9 +117,10 @@ class OpenAIEngine(BaseTranslationEngine):
             ],
             "temperature": 0.2,
             "stream": True,
+            **local_options,
         }
 
-        async with httpx.AsyncClient(timeout=90.0) as client:
+        async with httpx.AsyncClient(timeout=180.0 if local_options else 90.0) as client:
             async with client.stream("POST", f"{base_url}/chat/completions", headers=headers, json=payload) as response:
                 if response.status_code != 200:
                     err = await response.aread()

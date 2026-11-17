@@ -104,6 +104,8 @@ def split_video_by_minutes(
     # Clip duration in seconds (minimum 10s)
     clip_seconds = max(10.0, float(clip_minutes) * 60.0)
     total_parts = math.ceil(total_duration / clip_seconds)
+    if total_parts > 1 and total_duration - (total_parts - 1) * clip_seconds < 3.0:
+        total_parts -= 1
     base_name = sanitize_filename(prefix if prefix else v_path.stem)
 
     logger.info(
@@ -117,11 +119,10 @@ def split_video_by_minutes(
 
     while current_start < total_duration:
         current_end = min(current_start + clip_seconds, total_duration)
+        # Include a short final tail in this clip instead of discarding it.
+        if 0 < total_duration - current_end < 3.0:
+            current_end = total_duration
         part_dur = current_end - current_start
-
-        # If residual tail is less than 3 seconds and we already have parts, merge into previous part
-        if part_dur < 3.0 and parts:
-            break
 
         start_lbl = format_time_label(current_start)
         end_lbl = format_time_label(current_end)
@@ -199,7 +200,7 @@ def split_video_by_minutes(
         part_idx += 1
 
     # 2. Package all generated clips into a .ZIP archive
-    dur_str = f"{int(clip_minutes)}min" if clip_minutes.is_integer() else f"{clip_minutes:.1f}min"
+    dur_str = f"{int(clip_minutes)}min" if float(clip_minutes).is_integer() else f"{clip_minutes:.1f}min"
     zip_filename = f"{base_name}_split_{dur_str}_clips.zip"
     zip_path = target_dir / zip_filename
 

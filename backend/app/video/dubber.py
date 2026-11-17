@@ -1,10 +1,16 @@
 """Audio-Video Synchronizer and Dubbing Engine with FFmpeg."""
 
 import json
+import asyncio
 import logging
 import subprocess
+import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+from .segments import require_translations, require_renderable_segments
+from .render_options import VideoRenderOptions, resolve_logo
+from .subtitles import readable_cues, render_caption_track
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +18,30 @@ ROOT_PROJECT_DIR = Path(__file__).resolve().parent.parent.parent.parent
 STORAGE_DIR = ROOT_PROJECT_DIR / "storage"
 DUBBED_DIR = STORAGE_DIR / "dubbed"
 DUBBED_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@lru_cache(maxsize=1)
+def _hardware_h264_available():
+    if sys.platform != "darwin":
+        return False
+    try:
+        result = subprocess.run([
+            "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=black:s=128x128:r=1",
+            "-frames:v", "1", "-c:v", "h264_videotoolbox", "-f", "null", "-",
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _video_encoding_args(video_path):
+    if _hardware_h264_available():
+        dimensions = json.loads(subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", str(video_path)
+        ]))["streams"][0]
+        bitrate = max(2_000_000, min(18_000_000, int(dimensions["width"] * dimensions["height"] * 3.3)))
+        return ["-c:v", "h264_videotoolbox", "-b:v", str(bitrate), "-pix_fmt", "yuv420p"]
+    return ["-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p"]
 
 
 def get_media_duration(file_path: str) -> float:
@@ -66,20 +96,20 @@ def fit_audio_tempo(clip_path: str, target_duration: float) -> str:
         return clip_path
 
 
-def generate_srt_file(segments: List[Dict[str, Any]], output_path: str) -> str:
+def generate_srt_file(segments: List[Dict[str, Any]], output_path: str, video_duration=None) -> str:
     """Creates a standard .srt subtitle file from segments."""
     def format_timestamp(seconds: float) -> str:
-        hrs = int(seconds // 3600)
-        mins = int((seconds % 3600) // 60)
-        secs = int(seconds % 60)
-        millis = int((seconds % 1) * 1000)
+        milliseconds = max(0, round(seconds * 1000))
+        hrs, remainder = divmod(milliseconds, 3600000)
+        mins, remainder = divmod(remainder, 60000)
+        secs, millis = divmod(remainder, 1000)
         return f"{hrs:02d}:{mins:02d}:{secs:02d},{millis:03d}"
 
     content = []
-    for i, seg in enumerate(segments, start=1):
+    for i, seg in enumerate(readable_cues(segments, video_duration), start=1):
         start_ts = format_timestamp(seg.get("start", 0))
         end_ts = format_timestamp(seg.get("end", 0))
-        text = seg.get("translation") or seg.get("text", "")
+        text = seg["text"]
         content.append(f"{i}\n{start_ts} --> {end_ts}\n{text}\n")
 
     with open(output_path, "w", encoding="utf-8") as f:
@@ -283,13 +313,15 @@ def build_master_audio_track(
         return output_path
 
 
-async def assemble_dubbed_video(
+def _assemble_dubbed_video(
     video_path: str,
     segments: List[Dict[str, Any]],
     output_filename: Optional[str] = None,
     audio_mode: str = "replace",  # "replace" (100% pure voiceover matching preview), "ducking", "mute", "smart_sidechain"
     bg_volume: Optional[float] = None,
     burn_subtitles: bool = False,
+    render_options: Optional[dict] = None,
+    prepared_audio_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Synchronizes synthesized Khmer audio clips onto the video timeline and
@@ -297,6 +329,9 @@ async def assemble_dubbed_video(
     """
     video = Path(video_path)
     video_duration = get_media_duration(str(video))
+    options = VideoRenderOptions(**(render_options or {}))
+    if burn_subtitles:
+        options.burn_subtitles = True
 
     if not output_filename:
         out_name = f"dubbed_{video.stem}.mp4"
@@ -304,25 +339,26 @@ async def assemble_dubbed_video(
         out_name = output_filename
 
     final_video_path = DUBBED_DIR / out_name
-    temp_dir = DUBBED_DIR / f"temp_{video.stem}"
+    temp_dir = DUBBED_DIR / f"temp_{final_video_path.stem}"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Schedule clips with Lip-Sync sequencer (mouth-aligned, time-fitted, zero cumulative drift)
-    valid_clips = schedule_non_overlapping_clips(segments, temp_dir=temp_dir, max_speed=1.45)
-
-    # 2. Build master voice track with batching support for 5h - 10h+ videos
-    master_voice_path = temp_dir / "master_khmer_voice.wav"
-    build_master_audio_track(
-        valid_clips=valid_clips,
-        video_duration=video_duration,
-        temp_dir=temp_dir,
-        output_path=master_voice_path,
-        batch_size=50,
-    )
+    if prepared_audio_path:
+        master_voice_path = Path(prepared_audio_path)
+        if master_voice_path.resolve() == final_video_path.resolve():
+            raise ValueError("A visual update must use a new output filename")
+    else:
+        valid_clips = schedule_non_overlapping_clips(segments, temp_dir=temp_dir, max_speed=1.45)
+        # 2. Build the voice track only when dialogue/audio changed.
+        master_voice_path = temp_dir / "master_khmer_voice.wav"
+        build_master_audio_track(
+            valid_clips=valid_clips, video_duration=video_duration,
+            temp_dir=temp_dir, output_path=master_voice_path, batch_size=50,
+        )
 
     # 3. Generate Subtitles .srt synchronized with collision-free timestamps
     srt_path = DUBBED_DIR / f"{final_video_path.stem}.srt"
-    generate_srt_file(segments, str(srt_path))
+    generate_srt_file(segments, str(srt_path), video_duration)
 
     # 4. Final Video Assembly
     # Audio balance configuration:
@@ -333,10 +369,7 @@ async def assemble_dubbed_video(
     # 2. amix uses 'normalize=0:dropout_transition=0' so Khmer voice volume is never halved (-6dB).
     # 3. For ducking/sidechain: pre-attenuates original foreign audio so speech bleed and background hiss never clash.
     if bg_volume is not None:
-        if bg_volume <= 0.001:
-            # 100% Pure Voiceover: zero original video noise/speech, bit-exact identical to preview
-            audio_filter = "[1:a]volume=1.0[aout]"
-        elif bg_volume < 0:
+        if bg_volume < 0:
             # Smart Cinema Ducking with pre-attenuated background
             audio_filter = (
                 "[0:a]volume=0.15[bg_in];"
@@ -344,6 +377,8 @@ async def assemble_dubbed_video(
                 "[1:a]volume=1.0[khmer];"
                 "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
             )
+        elif bg_volume <= 0.001:
+            audio_filter = "[1:a]volume=1.0[aout]"
         else:
             audio_filter = (
                 f"[0:a]volume={bg_volume:.3f}[bg];"
@@ -376,32 +411,47 @@ async def assemble_dubbed_video(
             "[bg][khmer]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
         )
 
-    if burn_subtitles:
-        final_cmd.extend([
-            "-i", str(srt_path),
-            "-filter_complex", audio_filter,
-            "-map", "0:v",
-            "-map", "[aout]",
-            "-map", "2:s",
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-b:a", "256k",
-            "-movflags", "+faststart",
-            "-c:s", "mov_text",
-            "-metadata:s:s:0", "language=khm",
-            str(final_video_path)
+    video_filters = []
+    video_label = "0:v:0"
+    input_index = 2
+    if options.blur_chinese_subtitles:
+        x = f"2*floor(iw*{options.blur_x:.6f}/2)"
+        y = f"2*floor(ih*{options.blur_y:.6f}/2)"
+        width = f"max(2,2*floor(iw*{options.blur_width:.6f}/2))"
+        height = f"max(2,2*floor(ih*{options.blur_height:.6f}/2))"
+        video_filters.extend([
+            f"[{video_label}]split=2[clean][strip]",
+            f"[strip]crop=w='{width}':h='{height}':x='{x}':y='{y}',gblur=sigma=18[blur]",
+            f"[clean][blur]overlay=x='2*floor(main_w*{options.blur_x:.6f}/2)':y='2*floor(main_h*{options.blur_y:.6f}/2)'[blurred]",
         ])
+        video_label = "blurred"
+    if options.burn_subtitles and segments:
+        dimensions = json.loads(subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", str(video)
+        ]))["streams"][0]
+        caption_track = render_caption_track(segments, dimensions["width"], dimensions["height"], video_duration, temp_dir / "captions")
+        final_cmd.extend(["-f", "concat", "-safe", "0", "-i", str(caption_track)])
+        video_filters.append(f"[{video_label}][{input_index}:v]overlay=x=0:y=main_h-overlay_h:eof_action=pass[captions]")
+        video_label = "captions"
+        input_index += 1
+    if options.add_logo:
+        final_cmd.extend(["-i", str(resolve_logo(options.logo_id))])
+        video_filters.extend([
+            f"[{input_index}:v]scale=40:40:force_original_aspect_ratio=decrease,format=rgba,pad=40:40:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setsar=1[logo]",
+            f"[{video_label}][logo]overlay=x=main_w-overlay_w-12:y=12:eof_action=repeat[branded]",
+        ])
+        video_label = "branded"
+    filters = video_filters if prepared_audio_path else [audio_filter, *video_filters]
+    if filters:
+        final_cmd.extend(["-filter_complex", ";".join(filters)])
+    final_cmd.extend(["-map", f"[{video_label}]" if video_filters else "0:v:0",
+                      "-map", "1:a:0" if prepared_audio_path else "[aout]"])
+    if video_filters:
+        final_cmd.extend(_video_encoding_args(video))
     else:
-        final_cmd.extend([
-            "-filter_complex", audio_filter,
-            "-map", "0:v",
-            "-map", "[aout]",
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-b:a", "256k",
-            "-movflags", "+faststart",
-            str(final_video_path)
-        ])
+        final_cmd.extend(["-c:v", "copy"])
+    final_cmd.extend(["-c:a", "copy"] if prepared_audio_path else ["-c:a", "aac", "-b:a", "256k"])
+    final_cmd.extend(["-t", str(video_duration), "-movflags", "+faststart", str(final_video_path)])
 
     logger.info(f"Rendering collision-free dubbed video ({audio_mode}): {' '.join(final_cmd)}")
     subprocess.run(final_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -413,4 +463,36 @@ async def assemble_dubbed_video(
         "srt_url": f"/static/dubbed/{srt_path.name}",
         "duration": video_duration,
         "segments_count": len(segments),
+        "render_options": options.render_values(),
     }
+
+
+async def assemble_dubbed_video(
+    video_path: str,
+    segments: List[Dict[str, Any]],
+    output_filename: Optional[str] = None,
+    audio_mode: str = "replace",
+    bg_volume: Optional[float] = None,
+    burn_subtitles: bool = False,
+    render_options: Optional[dict] = None,
+    prepared_audio_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Render in a worker so status polling stays responsive during FFmpeg work."""
+    if prepared_audio_path:
+        # A visual update copies the finished audio; individual voice caches
+        # are not needed to reproduce that already completed soundtrack.
+        unresolved = [seg for seg in segments if (seg.get("text") or "").strip() and
+                      (not (seg.get("translation") or "").strip() or seg.get("translation_error")) and
+                      seg.get("audio_source") != "original_fallback"]
+        require_translations(unresolved)
+    else:
+        require_renderable_segments(segments)
+    from .cache import cache_in_use
+    from .resources import resource_slot, run_blocking
+    out_name = output_filename or f"dubbed_{Path(video_path).stem}.mp4"
+    with cache_in_use(DUBBED_DIR / f"temp_{Path(out_name).stem}"):
+        async with resource_slot("video_render", 1):
+            return await run_blocking(
+                _assemble_dubbed_video, video_path, segments, output_filename,
+                audio_mode, bg_volume, burn_subtitles, render_options, prepared_audio_path,
+            )

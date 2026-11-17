@@ -3,12 +3,12 @@
 import re
 import shutil
 import logging
-import asyncio
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import httpx
 import yt_dlp
+from .resources import run_blocking
 
 logger = logging.getLogger(__name__)
 
@@ -131,9 +131,7 @@ async def download_bilibili_direct(
 
         cmd.extend(["-c", "copy", "-movflags", "+faststart", str(final_video_path)])
 
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None,
+        await run_blocking(
             lambda: subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         )
 
@@ -161,9 +159,7 @@ async def download_direct_media(
         cmd.extend(["-t", str(max_clip_seconds)])
     cmd.extend(["-i", url, "-c", "copy", "-movflags", "+faststart", str(output_path)])
     
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(
-        None,
+    await run_blocking(
         lambda: subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     )
     return str(output_path)
@@ -245,9 +241,8 @@ async def download_video(
                     return extracted_retry
             raise
 
-    loop = asyncio.get_event_loop()
     try:
-        info = await loop.run_in_executor(None, _sync_download)
+        info = await run_blocking(_sync_download)
     except Exception as e:
         logger.warning(f"yt-dlp download failed: {e}")
         # 3. Direct video fallback (.mp4, .mov, .m3u8, direct CDN links)

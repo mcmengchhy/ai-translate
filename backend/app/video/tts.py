@@ -17,6 +17,8 @@ from typing import List, Dict, Any, Optional, Tuple
 import edge_tts
 
 from ..khmer import normalize_khmer_unicode
+from .segments import require_translations
+from .resources import resource_slot
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +189,7 @@ async def synthesize_khmer_clip(
     await communicate.save(output_path)
 
     if enhance:
-        _enhance_audio_clip(output_path)
+        await asyncio.to_thread(_enhance_audio_clip, output_path)
 
     return output_path
 
@@ -207,21 +209,23 @@ async def synthesize_segments(
     Synthesizes speech for a list of timestamped segments in parallel.
 
     Each segment gets individually-tuned prosody (rate / pitch / volume).
-    Uses an asyncio Semaphore to cap parallel Edge-TTS calls, with retry backoff for 100% reliability.
+    Uses bounded parallel calls, retry backoff, and per-cue error reporting.
 
     Args:
         on_progress: Optional callable(done: int, total: int) — called after
                      each segment finishes so callers can report live progress.
     """
+    require_translations(segments)
     output_dir.mkdir(parents=True, exist_ok=True)
     semaphore = asyncio.Semaphore(max_concurrency)
     total = len(segments)
     done_count = 0
     lock = asyncio.Lock()
+    consecutive_failures = 0
 
     async def _synth_one(seg: Dict[str, Any]):
-        nonlocal done_count
-        text = seg.get("translation") or seg.get("text", "")
+        nonlocal done_count, consecutive_failures
+        text = seg.get("translation") or ""
         if not text.strip():
             seg["audio_file"] = None
             async with lock:
@@ -253,22 +257,31 @@ async def synthesize_segments(
         # Robust synthesis loop with 3 retries against Edge-TTS rate limits
         for attempt in range(3):
             try:
-                async with semaphore:
+                async with semaphore, resource_slot("voice_requests", 4):
+                    if consecutive_failures >= 8:
+                        seg.update(audio_file=None, tts_error="Voice service unavailable; queued for recovery")
+                        break
                     communicate = edge_tts.Communicate(
                         clean, voice,
                         rate=eff_rate,
                         pitch=eff_pitch,
                         volume=eff_volume,
                     )
-                    await communicate.save(str(clip_path))
+                    await asyncio.wait_for(communicate.save(str(clip_path)), timeout=30)
+                    if not clip_path.is_file() or clip_path.stat().st_size == 0:
+                        raise RuntimeError("Voice service returned an empty audio file")
 
                     if enhance:
                         # Run studio EQ + loudnorm in executor to match preview audio exactly
-                        loop = asyncio.get_event_loop()
-                        await loop.run_in_executor(None, _enhance_audio_clip, str(clip_path))
+                        from .resources import run_blocking
+                        await run_blocking(_enhance_audio_clip, str(clip_path))
 
                     seg["audio_file"] = str(clip_path)
                     seg["voice_type"] = seg_voice_type
+                    seg["audio_source"] = "khmer_tts"
+                    seg.pop("tts_error", None)
+                    seg.pop("_dirty", None)
+                    consecutive_failures = 0
                     seg["prosody"] = {
                         "rate": eff_rate,
                         "pitch": eff_pitch,
@@ -276,9 +289,12 @@ async def synthesize_segments(
                     }
                     break
             except Exception as e:
-                if attempt == 2:
+                consecutive_failures += 1
+                if attempt == 2 or consecutive_failures >= 8:
                     logger.error(f"Error synthesizing segment {seg['id']}: {e}")
                     seg["audio_file"] = None
+                    seg["tts_error"] = str(e)
+                    break
                 else:
                     await asyncio.sleep(0.5 * (attempt + 1))
 
@@ -288,5 +304,8 @@ async def synthesize_segments(
                 on_progress(done_count, total)
 
     tasks = [_synth_one(seg) for seg in segments]
-    await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for seg, result in zip(segments, results):
+        if isinstance(result, Exception):
+            seg.update(audio_file=None, tts_error=str(result))
     return segments

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Khmer AI Video Dubber & Auto-Translator | បកប្រែ និងបញ្ចូលសំឡេងជាភាសាខ្មែរ</title>
-    <meta name="description" content="AI-powered video translation and Khmer voice dubbing for Bilibili, YouTube, and local videos. Features Whisper STT, Gemini AI translation, and Edge-TTS Khmer voiceover.">
+    <meta name="description" content="AI-powered video translation and Khmer voice dubbing for Bilibili, YouTube, and local videos. Features Whisper STT, contextual AI translation, and Edge-TTS Khmer voiceover.">
     
     <!-- Google Fonts: Kantumruy Pro for Khmer, Outfit & Inter for UI -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -13,7 +13,7 @@
     
     <!-- Phosphor Icons (Lightweight SVG Icons) -->
     <script src="https://unpkg.com/@phosphor-icons/web"></script>
-    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/styles.css?v=20261117-checkpoints-3">
 </head>
 <body>
     <div class="app-background">
@@ -81,7 +81,7 @@
                     <div class="hero-text-block">
                         <div class="hero-badge"><i class="ph ph-sparkle"></i> YouTube, Bilibili & Web Video to Khmer Voice</div>
                         <h2>Auto-Translate & Dub Any Video into Khmer (បញ្ចូលសំឡេងខ្មែរ)</h2>
-                        <p>Paste a <strong>YouTube</strong> link, <strong>Bilibili</strong> video, <strong>TikTok</strong>, or social video link, or upload your own video file. The pipeline automatically extracts video & speech, translates to natural Khmer with tone preservation, synthesizes studio-grade Khmer voiceover, and lip-syncs the audio!</p>
+                        <p>Upload a video or paste a <strong>YouTube</strong>, <strong>Bilibili</strong>, or <strong>TikTok</strong> link. The tool combines speech and subtitles, translates them into English, then translates the English into Khmer for subtitles and voiceover.</p>
                     </div>
 
                     <!-- Voice & Audio Configuration Bar -->
@@ -130,8 +130,8 @@
                         <div class="config-col">
                             <label><i class="ph ph-chat-circle-dots"></i> Linguistic Tone</label>
                             <select id="video-tone-select" class="styled-select">
-                                <option value="standard" selected>ទូទៅ Standard</option>
-                                <option value="casual">សាមញ្ញ Casual / Conversational</option>
+                                <option value="casual" selected>សន្ទនា Natural Khmer Dialogue</option>
+                                <option value="standard">ទូទៅ Standard</option>
                                 <option value="formal">ផ្លូវការ Formal / Documentary</option>
                                 <option value="polite">គួរសម Polite / Respectful</option>
                             </select>
@@ -139,11 +139,45 @@
 
                         <div class="config-col checkbox-col">
                             <label class="checkbox-label" title="Permanently render Khmer subtitles onto the video frames">
-                                <input type="checkbox" id="burn-subs-checkbox">
+                                <input type="checkbox" id="burn-subs-checkbox" onchange="onVideoEffectsChange('video')">
                                 <span>Burn Subtitles into Video</span>
                             </label>
                         </div>
                     </div>
+
+<details class="video-effects-panel" id="video-effects-panel">
+                        <summary><i class="ph ph-image"></i> Logo, subtitle blur &amp; Khmer captions</summary>
+                        <div class="video-effects-grid">
+                            <div class="video-effect-group">
+                                <label class="checkbox-label"><input type="checkbox" id="video-add-logo" onchange="onVideoEffectsChange('video')"> Add our logo · 40×40 px, top right</label>
+                                <div class="video-logo-picker">
+                                    <img id="video-logo-preview" src="/api/video/logo/cinekhmer" width="40" height="40" alt="Selected video logo">
+                                    <select id="video-logo-id" class="styled-select" onchange="onVideoEffectsChange('video')">
+                                        <option value="cinekhmer">CineKhmer AI</option>
+                                        <option value="khmerdub">KhmerDub AI</option>
+                                    </select>
+                                </div>
+                                <label class="video-logo-upload">Upload your logo (PNG, JPEG, WebP)
+                                    <input type="file" id="video-logo-file" accept="image/png,image/jpeg,image/webp" onchange="uploadVideoLogo('video', this.files[0])">
+                                </label>
+                            </div>
+                            <div class="video-effect-group">
+                                <label class="checkbox-label"><input type="checkbox" id="video-blur-subtitles" onchange="onVideoEffectsChange('video')"> Blur original Chinese subtitle area</label>
+                                <div class="blur-region-controls">
+                                    <label>Left %<input type="number" id="video-blur-x" min="0" max="99" step="1" value="10" onchange="onVideoEffectsChange('video')"></label>
+                                    <label>Top %<input type="number" id="video-blur-y" min="0" max="99" step="1" value="80" onchange="onVideoEffectsChange('video')"></label>
+                                    <label>Width %<input type="number" id="video-blur-width" min="1" max="100" step="1" value="80" onchange="onVideoEffectsChange('video')"></label>
+                                    <label>Height %<input type="number" id="video-blur-height" min="1" max="100" step="1" value="14" onchange="onVideoEffectsChange('video')"></label>
+                                </div>
+                                <small>Blurs this fixed area throughout the video. Adjust it to cover the original subtitles.</small>
+                            </div>
+                            <div class="video-effect-group">
+
+                                <p>Khmer captions use balanced lines and outlined text. The logo sits 12 px from the top and right edges.</p>
+                                <small>Enable an effect, then create or re-render the video to apply it. Visual effects take longer to export than audio-only edits.</small>
+                            </div>
+                        </div>
+                    </details>
 
                     <!-- Expandable Voice Tuner Drawer -->
                     <div id="voice-tuner-drawer" class="voice-tuner-panel" style="display: none;">
@@ -267,31 +301,52 @@
                                 <i class="ph ph-upload-simple"></i>
                             </div>
                             <div>
-                                <h3>Upload Local Video File</h3>
-                                <p>Drag and drop any MP4, MKV, MOV, or WEBM video from your computer.</p>
+                                <h3>Upload Videos</h3>
+                                <p>Run three different videos at the same time. Select or drop MP4, MKV, MOV, or WEBM files.</p>
                             </div>
                         </div>
 
                         <div class="video-dropzone" id="video-file-dropzone">
-                            <input type="file" id="video-file-input" accept="video/mp4,video/mkv,video/webm,video/quicktime" style="display: none;">
+                            <input type="file" id="video-file-input" accept=".mp4,.mkv,.webm,.mov" multiple style="display: none;">
                             <i class="ph ph-file-video video-icon"></i>
-                            <span id="selected-video-filename">Click or Drag video here</span>
-                            <small>Auto-reads on-screen subtitles (Hardsubs) or embedded tracks</small>
+                            <span id="selected-video-filename">Click or drag videos here</span>
+                            <small>Three tasks run together; extra videos wait in the queue. Each has its own result.</small>
                         </div>
 
                         <div class="subtitle-optional-container" style="margin-top: 10px; display: flex; flex-direction: column; gap: 4px;">
                             <label style="font-size: 12px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; padding: 4px 8px; border-radius: 4px; background: rgba(255,255,255,0.03); border: 1px dashed var(--border-subtle); width: fit-content;">
-                                <i class="ph ph-subtitles"></i> Attach optional subtitle file (.srt, .vtt)
-                                <input type="file" id="video-sub-file-input" accept=".srt,.vtt,.txt" style="display: none;">
+                                <i class="ph ph-subtitles"></i> Optional subtitles (match each video's filename)
+                                <input type="file" id="video-sub-file-input" accept=".srt,.vtt,.txt" multiple style="display: none;">
                             </label>
                             <span id="selected-sub-filename" style="display: none; font-size: 11px; color: #38bdf8;"></span>
                         </div>
 
                         <div id="video-upload-action-wrap" style="display: none; margin-top: 12px;">
                             <button class="btn-primary btn-block" id="start-file-dub-btn">
-                                <i class="ph ph-film-strip"></i> Start Dubbing Uploaded Video
+                                <i class="ph ph-film-strip"></i> Add Videos to Queue
                             </button>
                         </div>
+                        <p id="video-upload-status" role="status" aria-live="polite"></p>
+                    </div>
+                </div>
+
+                <div class="input-card video-jobs-card" id="video-jobs-card">
+                    <div class="video-jobs-header">
+                        <h3>Video Jobs</h3>
+                        <span id="video-jobs-summary" role="status">Loading jobs...</span>
+                        <button type="button" class="btn-ghost btn-sm video-task-remove" id="clear-video-tasks-btn" onclick="clearVideoTasksAndCache()" disabled>Clear tasks &amp; cache</button>
+                    </div>
+                    <p>Each task has separate progress, dialogue, and downloads. Open any task to view it while the others continue.</p>
+                    <div id="video-jobs-list"></div>
+                </div>
+
+                <div class="input-card" id="duplicate-job-card" style="display: none; margin-top: 16px;" role="status">
+                    <h3>This video already has a saved job</h3>
+                    <p id="duplicate-job-details"></p>
+                    <div class="sample-btn-row">
+                        <button type="button" class="btn-primary btn-sm" onclick="chooseDuplicateJob('open')">Open saved job</button>
+                        <button type="button" class="btn-secondary btn-sm" id="duplicate-resume-btn" onclick="chooseDuplicateJob('resume')">Resume saved work</button>
+                        <button type="button" class="btn-ghost btn-sm" onclick="chooseDuplicateJob('new')">Start a new run</button>
                     </div>
                 </div>
 
@@ -303,10 +358,13 @@
                             <div>
                                 <h4 id="pipeline-job-title">Processing Video...</h4>
                                 <span class="pipeline-stage" id="pipeline-stage-text">Initializing pipeline</span>
+                                <small id="pipeline-job-id"></small>
                             </div>
                         </div>
                         <span class="pipeline-percent" id="pipeline-percent-text">10%</span>
                     </div>
+                    <button type="button" class="btn-secondary btn-sm" id="pipeline-resume-btn" style="display: none;" onclick="resumeTrackedJob()">Resume saved work</button>
+                    <button type="button" class="btn-secondary btn-sm" id="pipeline-pause-btn" style="display: none;" onclick="changeVideoCheckpoint(activeVideoJobId, 'pause')">Pause</button>
 
                     <div class="pipeline-bar-wrap">
                         <div class="pipeline-bar-fill" id="pipeline-progress-fill" style="width: 10%;"></div>
@@ -324,7 +382,7 @@
                         </div>
                         <div class="step-badge" id="step-trans">
                             <i class="ph ph-translate"></i>
-                            <span>3. 2-Step English Pivot</span>
+                            <span>3. Direct Khmer Translation</span>
                         </div>
                         <div class="step-badge" id="step-tts">
                             <i class="ph ph-microphone"></i>
@@ -373,8 +431,12 @@
                             </button>
 
                             <!-- AI Polish Dialogue Logic -->
+                            <button type="button" class="btn-secondary btn-sm" id="btn-translate-missing" onclick="studioTranslateMissing()" title="Translate only missing Khmer dialogue and keep your existing edits">
+                                <i class="ph ph-translate"></i> Translate Missing
+                            </button>
+
                             <button type="button" class="btn-ghost btn-sm" id="btn-polish-dialogue" onclick="studioPolishDialogue()" title="Fix machine translation blunders and make dialogue natural and logical">
-                                <i class="ph ph-magic-wand" style="color: var(--accent-purple);"></i> Polish Logic
+                                <i class="ph ph-magic-wand" style="color: var(--accent-purple);"></i> Polish Khmer
                             </button>
 
                             <!-- Auto Alternate Speakers (Male / Female) -->
@@ -393,6 +455,40 @@
                             </button>
                         </div>
                     </div>
+
+<details class="video-effects-panel" id="studio-effects-panel">
+                        <summary><i class="ph ph-image"></i> Logo, subtitle blur &amp; Khmer captions</summary>
+                        <div class="video-effects-grid">
+                            <div class="video-effect-group">
+                                <label class="checkbox-label"><input type="checkbox" id="studio-add-logo" onchange="onVideoEffectsChange('studio')"> Add our logo · 40×40 px, top right</label>
+                                <div class="video-logo-picker">
+                                    <img id="studio-logo-preview" src="/api/video/logo/cinekhmer" width="40" height="40" alt="Selected video logo">
+                                    <select id="studio-logo-id" class="styled-select" onchange="onVideoEffectsChange('studio')">
+                                        <option value="cinekhmer">CineKhmer AI</option>
+                                        <option value="khmerdub">KhmerDub AI</option>
+                                    </select>
+                                </div>
+                                <label class="video-logo-upload">Upload your logo (PNG, JPEG, WebP)
+                                    <input type="file" id="studio-logo-file" accept="image/png,image/jpeg,image/webp" onchange="uploadVideoLogo('studio', this.files[0])">
+                                </label>
+                            </div>
+                            <div class="video-effect-group">
+                                <label class="checkbox-label"><input type="checkbox" id="studio-blur-subtitles" onchange="onVideoEffectsChange('studio')"> Blur original Chinese subtitle area</label>
+                                <div class="blur-region-controls">
+                                    <label>Left %<input type="number" id="studio-blur-x" min="0" max="99" step="1" value="10" onchange="onVideoEffectsChange('studio')"></label>
+                                    <label>Top %<input type="number" id="studio-blur-y" min="0" max="99" step="1" value="80" onchange="onVideoEffectsChange('studio')"></label>
+                                    <label>Width %<input type="number" id="studio-blur-width" min="1" max="100" step="1" value="80" onchange="onVideoEffectsChange('studio')"></label>
+                                    <label>Height %<input type="number" id="studio-blur-height" min="1" max="100" step="1" value="14" onchange="onVideoEffectsChange('studio')"></label>
+                                </div>
+                                <small>Blurs this fixed area throughout the video. Adjust it to cover the original subtitles.</small>
+                            </div>
+                            <div class="video-effect-group">
+                                <label class="checkbox-label"><input type="checkbox" id="studio-burn-subs-checkbox" onchange="onVideoEffectsChange('studio')"> Burn readable Khmer subtitles</label>
+                                <p>Khmer captions use balanced lines and outlined text. The logo sits 12 px from the top and right edges.</p>
+                                <small>Enable an effect, then create or re-render the video to apply it.</small>
+                            </div>
+                        </div>
+                    </details>
 
                     <!-- Studio 2-Column Workspace -->
                     <div class="studio-workspace-grid">
@@ -919,28 +1015,9 @@
                 <div class="form-group">
                     <label for="setting-engine-select">Preferred AI Translation Engine</label>
                     <select id="setting-engine-select">
-                        <option value="auto">Auto (Gemini AI if key present, else Free Engine)</option>
-                        <option value="gemini">Google Gemini AI (Recommended for high nuance & Khmer tone)</option>
+                        <option value="auto">Auto (OpenAI / Ollama if configured, otherwise Free)</option>
                         <option value="free">Free Instant Engine (No API key needed)</option>
                         <option value="openai">OpenAI / Local Ollama</option>
-                    </select>
-                </div>
-
-                <div class="form-group" id="gemini-key-group">
-                    <label for="setting-gemini-key">
-                        Gemini API Key
-                        <span class="label-badge">Free Tier Available</span>
-                    </label>
-                    <input type="password" id="setting-gemini-key" placeholder="AIzaSy...">
-                    <small>Get a free key from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">Google AI Studio</a>. Saved locally in your browser.</small>
-                </div>
-
-                <div class="form-group" id="gemini-model-group">
-                    <label for="setting-gemini-model">Gemini Model</label>
-                    <select id="setting-gemini-model">
-                        <option value="gemini-2.0-flash">gemini-2.0-flash (Fastest & high quality)</option>
-                        <option value="gemini-1.5-flash">gemini-1.5-flash (Standard)</option>
-                        <option value="gemini-1.5-pro">gemini-1.5-pro (High reasoning)</option>
                     </select>
                 </div>
 
@@ -948,7 +1025,10 @@
                     <label for="setting-openai-key">OpenAI / Groq API Key</label>
                     <input type="password" id="setting-openai-key" placeholder="sk-...">
                     <label for="setting-openai-url" style="margin-top: 8px;">Base URL (Optional, for Ollama: http://localhost:11434/v1)</label>
-                    <input type="text" id="setting-openai-url" placeholder="https://api.openai.com/v1">
+                    <input type="url" id="setting-openai-url" placeholder="https://api.openai.com/v1">
+                    <label for="setting-openai-model" style="margin-top: 8px;">Model (Optional)</label>
+                    <input type="text" id="setting-openai-model" placeholder="Server default, or your local model name">
+                    <small>For Ollama, enter its base URL and an installed model name. An API key is optional for local servers. Preferences are saved in this browser.</small>
                 </div>
             </div>
             <div class="modal-footer">
@@ -963,7 +1043,7 @@
 
     <script src="/static/js/tools.js"></script>
     <script src="/static/js/srt_parser.js"></script>
-    <script src="/static/js/video_dubber.js"></script>
+    <script src="/static/js/video_dubber.js?v=20261117-checkpoints-3"></script>
     <script src="/static/js/video_splitter.js"></script>
     <script src="/static/js/app.js"></script>
 </body>

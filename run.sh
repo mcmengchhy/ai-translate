@@ -9,11 +9,18 @@ cd "$DIR"
 if [ ! -d ".venv" ]; then
     echo "Creating virtual environment..."
     python3 -m venv .venv
-    ./.venv/bin/pip install -r requirements.txt
 fi
+
+# Keep existing environments up to date when dependencies change.
+./.venv/bin/python3 -m pip install -r requirements.txt
 
 echo "=========================================================="
 echo " Starting Khmer AI Translator on http://localhost:8000"
 echo "=========================================================="
 
-./.venv/bin/python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
+server_args=(backend.app.main:app --host 0.0.0.0 --port 8000)
+# Reloading Python during a long render cancels its background work.
+if [ "${DEV_RELOAD:-0}" = "1" ]; then
+    server_args+=(--reload)
+fi
+exec ./.venv/bin/python3 -m uvicorn "${server_args[@]}"

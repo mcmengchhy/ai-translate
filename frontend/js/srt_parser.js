@@ -48,7 +48,7 @@ function renderSubtitlesTable() {
         const tr = document.createElement('tr');
         tr.id = `cue-row-${index}`;
         tr.innerHTML = `
-            <td>${cue.id}</td>
+            <td>${escapeHtml(String(cue.id))}</td>
             <td class="timestamp-cell">${escapeHtml(cue.timestamp)}</td>
             <td>${escapeHtml(cue.text)}</td>
             <td class="khmer-cell" id="cue-trans-${index}">${escapeHtml(cue.translation || '—')}</td>
@@ -134,7 +134,6 @@ async function startBatchTranslate() {
     const sourceLang = document.getElementById('source-lang-select').value;
     const targetLang = document.getElementById('target-lang-select').value;
     const tone = getActiveTone();
-    const settings = getSavedSettings();
 
     let completed = 0;
     const total = loadedSubtitles.length;
@@ -158,10 +157,8 @@ async function startBatchTranslate() {
                     text: cue.text,
                     source_lang: sourceLang,
                     target_lang: targetLang,
-                    engine: settings.engine || 'auto',
-                    tone: tone,
-                    api_key: settings.geminiKey || null,
-                    model: settings.geminiModel || null
+                    ...getTranslationOptions(),
+                    tone: tone
                 })
             });
 

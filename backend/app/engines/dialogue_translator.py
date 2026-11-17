@@ -1,234 +1,354 @@
-"""Context-Aware Video Dialogue Translator.
+"""Translate source dialogue directly to Khmer; English is a review reference."""
 
-Translates subtitle segments in conversational clusters rather than isolated fragments,
-ensuring natural conversational flow, proper pronouns, and logical film dubbing in Khmer.
-"""
-
+import asyncio
+import hashlib
 import json
 import logging
 import re
-import asyncio
-from typing import List, Dict, Any, Optional
+from difflib import SequenceMatcher
+from contextlib import AsyncExitStack
+
 import httpx
 
-from . import get_engine
+from . import get_engine, resolve_engine
+from .free_engine import FreeEngine
 from ..khmer import normalize_khmer_unicode, polish_khmer_dialogue
+from ..khmer.dialogue_fixer import source_english_phrase, source_phrase_translation
+from ..khmer.romanization import is_source_romanization
+from ..khmer.native_phrases import native_phrase_translation
+from ..khmer.character_names import translation_glossary, missing_character_names, reviewed_reassurance
+from ..core.prompts import build_khmer_style_instructions
+from ..video.segments import MissingTranslationsError
 
 logger = logging.getLogger(__name__)
+FLOW = "speech_subtitles_to_khmer"
 
 
-async def translate_dialogue_batch_gemini(
-    segments: List[Dict[str, Any]],
-    source_lang: str,
-    api_key: Optional[str] = None,
-    tone: str = "casual",
-    model: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+class IncompleteTranslationStage(MissingTranslationsError):
+    def __init__(self, segments, stage):
+        super().__init__(segments)
+        self.args = (f"{stage} failed for cue(s): {', '.join(str(cue) for cue in self.cue_ids[:10])}. Retry the saved dialogue to continue.",)
+
+
+def evidence(seg):
+    text = (seg.get("text") or "").strip()
+    subtitle = (seg.get("subtitle_text") or "").strip()
+    if not subtitle and (seg.get("ocr_detected") or seg.get("source") == "subtitle_file"):
+        subtitle = text
+    speech = (seg.get("asr_text") or "").strip()
+    if not speech and not subtitle:
+        speech = text
+    return subtitle, speech, subtitle or speech or text
+
+
+def english_key(seg, source_lang):
+    return hashlib.sha256(json.dumps([source_lang, *evidence(seg)], ensure_ascii=False).encode()).hexdigest()
+
+
+def source_text(seg):
+    """Prefer written dialogue, except a matching fragment of longer speech.
+
+    Do not repair uncertain Chinese by guessing from a previous English draft.
+    Keep both originals and flag substantial disagreement for human review.
     """
-    Translates an entire dialogue scene using a 2-Step Reasoning Pivot:
-    Step 1: Chinese -> English Contextual Meaning & Intent (resolves wuxia terms, sarcasm, slang, relationships)
-    Step 2: English -> Authentic Conversational Khmer Film Dubbing (natural prose, proper pronouns, emotional particles)
-    """
-    import os
-    effective_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
-    effective_model = model or os.getenv("DEFAULT_GEMINI_MODEL", "gemini-flash-lite-latest")
+    subtitle, speech, primary = evidence(seg)
+    seg.pop("source_warning", None)
+    if subtitle and speech:
+        written = re.sub(r"[\W_]", "", subtitle)
+        spoken = re.sub(r"[\W_]", "", speech)
+        matcher = SequenceMatcher(None, written, spoken, autojunk=False)
+        shared = sum(block.size for block in matcher.get_matching_blocks())
+        if len(spoken) >= 8 and 2 <= len(written) <= len(spoken) * .6 and shared >= len(written) * .75:
+            return speech
+        if written and spoken and matcher.ratio() < .5:
+            seg["source_warning"] = "Speech and subtitles disagree. Review the original dialogue; the subtitle is used for direct translation."
+    return primary
 
-    if not effective_key:
-        raise ValueError("Gemini API key is required for AI Dialogue Dubbing.")
 
-    dialogue_payload = [
-        {
-            "id": seg["id"],
-            "speaker": seg.get("speaker", "Speaker"),
-            "text": seg.get("text", ""),
-            "duration_sec": round(max(0.6, float(seg.get("end", 0)) - float(seg.get("start", 0))), 1)
-        }
-        for seg in segments if seg.get("text", "").strip()
-    ]
-    if not dialogue_payload:
+def source_key(seg, source_lang, tone):
+    return hashlib.sha256(json.dumps([FLOW, source_lang, tone, *evidence(seg)], ensure_ascii=False).encode()).hexdigest()
+
+
+def current_translation(seg, source_lang, tone):
+    return bool((seg.get("translation") or "").strip() and not seg.get("translation_error")
+                and seg.get("translation_flow") == FLOW
+                and seg.get("translation_source_key") == source_key(seg, source_lang, tone))
+
+
+def is_english(text):
+    return isinstance(text, str) and bool(text.strip()) and not re.search(r"[\u4e00-\u9fff\u1780-\u17ff]", text) and bool(re.search(r"[A-Za-z0-9]", text))
+
+
+def clean_khmer(text, source):
+    text = re.sub(r"(?:4k|超清|漫剧|\b3473\b|\b1080p\b|\b720p\b)", "", text, flags=re.IGNORECASE).strip()
+    text = normalize_khmer_unicode(polish_khmer_dialogue(text, source))
+    if not any(char.isalnum() for char in text):
+        return ""
+    if re.search(r"[\u4e00-\u9fff]", source) and not re.search(r"[\u1780-\u17b3]", text) and re.search(r"[A-Za-z]", text):
+        if not is_source_romanization(source, text):
+            return ""
+    return text
+
+
+def store_english(seg, english, source_lang, subtitle_english="", speech_english=""):
+    english = source_english_phrase(evidence(seg)[2]) or english
+    if not is_english(english):
+        return False
+    seg.update(english_intent=english.strip(), english_evidence_key=english_key(seg, source_lang),
+               english_subtitle=subtitle_english, english_speech=speech_english)
+    return True
+
+
+def store_khmer(seg, text, source_lang, tone):
+    if seg.get("translation") != text or seg.get("audio_source") == "original_fallback":
+        seg.update(_dirty=True, audio_file=None)
+        # A generated replacement no longer carries the previous human review.
+        seg.pop('translation_review', None)
+        seg.pop('translation_review_note', None)
+        for field in ("audio_source", "fallback_subtitle", "generation_warning", "review_required"):
+            seg.pop(field, None)
+    seg.update(translation=text, translation_flow=FLOW,
+               translation_source_key=source_key(seg, source_lang, tone),
+               translation_source_text=source_text(seg))
+    seg.pop("translation_english_key", None)
+    seg.pop("translation_error", None)
+    if is_source_romanization(evidence(seg)[2], text):
+        seg["translation_warning"] = "Name retained in Latin spelling. Review its Khmer pronunciation if needed."
+    else:
+        seg.pop("translation_warning", None)
+
+
+def require_translations(segments):
+    spoken = [seg for seg in segments if evidence(seg)[2]]
+    missing_khmer = [seg for seg in spoken if not (seg.get("translation") or "").strip() or
+                     seg.get("translation_flow") != FLOW or seg.get("translation_error")]
+    if missing_khmer:
+        raise IncompleteTranslationStage(missing_khmer, "Source dialogue to Khmer")
+
+
+async def translate_dialogue_batch_openai(segments, source_lang, api_key=None, tone="casual", model=None,
+                                          base_url=None, context_before=None, context_after=None, name_glossary=None):
+    """Translate original speech/subtitles with scene context in one provider call."""
+    engine = get_engine("openai")
+    key, url, model = engine.request_settings({"api_key": api_key, "base_url": base_url, "model": model})
+    local_options = engine.generation_options(url, model)
+    scene = [*(context_before or []), *segments, *(context_after or [])]
+    name_glossary = name_glossary or translation_glossary(scene)
+    reviewed = {}
+    for index, cue in enumerate(scene[:-1]):
+        following = scene[index + 1]
+        if isinstance(cue.get('id'), int) and following.get('id') == cue['id'] + 1:
+            value = reviewed_reassurance(evidence(cue)[2], evidence(following)[2], name_glossary)
+            if value:
+                reviewed[str(cue['id'])] = value
+    cues = []
+    for seg in segments:
+        subtitle, speech, text = evidence(seg)
+        if not text:
+            continue
+        seg["translation_error"] = "Direct Khmer translation pending."
+        duration = max(.6, float(seg.get("target_end", seg.get("end", 0))) - float(seg.get("target_start", seg.get("start", 0))))
+        cues.append({"id": seg["id"], "subtitle_text": subtitle, "speech_text": speech, "text": source_text(seg),
+                     "duration_sec": round(duration, 2), "reading_budget": min(76, max(16, round(duration * 14)))})
+        if str(seg['id']) in reviewed:
+            cues[-1]['reviewed_translation'] = reviewed[str(seg['id'])]
+    if not cues:
         return segments
 
-    system_prompt = f"""You are a master cinematic translation & voice dubbing director specializing in {source_lang}-to-Khmer film localization (អ្នកដឹកនាំការបញ្ចូលសំឡេងភាពយន្តខ្មែរ).
+    prompt = f"""Translate the original {source_lang} movie dialogue DIRECTLY into natural Khmer for subtitles and dubbing.
+The original source dialogue is authoritative. Do not translate through an English intermediate.
+Use BOTH subtitle_text and speech_text for every cue. OCR and ASR may disagree on homophones.
+Use legible written subtitles to identify names, titles and places; use speech and neighboring cues
+for sentence intent. Do not discard either source or invent missing plot details.
+Preserve negation, who acts on whom, questions, emotion, amounts and relationships.
+For example, 阁 is a pavilion and 哥 is a brother; use the written evidence to resolve the homophone.
+Translate actions such as 传信 as 'send a message', rather than treating them as a person's name.
+Ignore watermarks, channel names and resolution labels. Context is read-only.
+Translate idioms by meaning, not literally. Use natural Khmer clauses and phrase spacing.
+Preserve foreign names consistently; do not leave ordinary words untranslated.
+Use name_glossary spellings exactly for the source names it lists. The kind field distinguishes people, organizations, states and places.
+Preserve a state's full name. Do not turn it into an ordinary Khmer word, a person's surname, or an unrelated modern country.
+Do not invent a different Khmer word for a listed name, or insert names into cues that do not mention them.
+For a person's name followed by 姐/姐姐, use its full sister_address spelling exactly (បងស្រី before the name).
+Do not change an older-sister address to អូន, and do not move បងស្រី after the name.
+Determine who is fine in 没事 from the spoken exchange: a speaker reassuring someone normally says ខ្ញុំមិនអីទេ។
+When 嗯 + a named address + 没事 is followed by the speaker's first-person explanation, address the listener and say ខ្ញុំមិនអីទេ។
+Do not force first person when the source actually says someone else is fine.
+If a cue includes reviewed_translation, retain that source-reviewed wording exactly.
+{build_khmer_style_instructions(tone, dialogue=True)}
+Requested tone: {tone}. Keep wording concise for duration_sec and reading_budget without dropping meaning.
+You may provide an english_intent as an optional English review reference. Khmer must come from the original dialogue.
+Return ONLY a JSON array containing every target id exactly once:
+[{{"id":1,"translation":"Khmer dialogue translated directly from the original source","english_intent":"Optional English reference"}}]."""
+    def context(items):
+        return [{"subtitle_text": evidence(seg)[0], "speech_text": evidence(seg)[1]} for seg in (items or [])]
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    async with httpx.AsyncClient(timeout=180 if local_options else 90) as client:
+        async def request(system, body):
+            response = await client.post(f"{url}/chat/completions", headers=headers, json={
+                "model": model, "temperature": .2,
+                **local_options,
+                "messages": [{"role": "system", "content": system},
+                             {"role": "user", "content": json.dumps(body, ensure_ascii=False)}],
+            })
+            if response.status_code != 200:
+                raise RuntimeError(f"Dialogue API returned {response.status_code}")
+            raw = response.json()["choices"][0]["message"]["content"].strip()
+            parsed = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw))
+            if not isinstance(parsed, list):
+                raise ValueError("Dialogue response must be a JSON array")
+            return {str(item["id"]): item for item in parsed if isinstance(item, dict) and "id" in item}
 
-CRITICAL 2-STEP TRANSLATION & REASONING PIVOT:
-To guarantee 100% logical clarity, accurate idioms, and natural dialogue:
-STEP 1 ({source_lang} -> English Meaning & Reasoning):
-- Accurately interpret the contextual meaning, intent, sarcasm, emotion, and character relationships into natural English.
-- Resolve historical/wuxia/cultural terms correctly (e.g. '两' = taels of silver [តម្លឹង], '客官' = guest/customer, '掌柜' = innkeeper/boss, '元宝' = silver/gold ingot, '穿越' = transmigrate/time-travel to another world, '无敌' = invincible/unbeatable).
-- NEVER confuse homophones or translate idioms literally (e.g. '老妈我都多大了' -> 'Mom, I am an adult now!', '是你给我50两' -> 'You owe ME 50 taels of silver!').
-- STRICT FILTER: If the input text contains video watermarks, channel badges, or resolution labels (e.g. '4K', '超清', '漫剧', '3473', '全集', '关注', 'bilibili'), COMPLETELY IGNORE them. Translate ONLY the actual spoken dialogue!
-
-STEP 2 (English -> Authentic Conversational Khmer Film Dubbing):
-- Translate the refined English intent into 100% natural, lively, and emotional Khmer dialogue (ភាសានិយាយក្នុងភាពយន្តខ្មែរ).
-- LIP-SYNC & BREVITY: The Khmer translation must be concise and punchy to match the character's speaking duration (see duration_sec). Keep short lines brief and colloquial so speaking duration matches mouth movement without rushing!
-- Use natural Cambodian pronouns (ខ្ញុំ, បង, អូន, ឯង, ម៉ាក់, ប៉ា, ថៅកែ, លោក, ទូលបង្គំ, ព្រះអង្គ) based on character hierarchy.
-- Use natural spoken particles (ណា, ហ្នឹង, ទេ, ម៉ង, តើ, ម្ល៉េះ).
-- NEVER output Thai (e.g., นี่คือ, ตำลึง), Vietnamese, or robotic transliterations.
-- The "translation" field must contain ONLY pure spoken Khmer dialogue for voice actor dubbing. NEVER include original Chinese characters, pinyin, or explanatory parenthetical glosses like '(ផ្ទះសំណាក់)' or '(还有)'.
-
-OUTPUT FORMAT: Return ONLY a valid JSON array:
-[
-  {{
-    "id": 1,
-    "english_intent": "Exact English meaning and character intent",
-    "translation": "100% natural conversational Khmer film dubbing"
-  }}
-]
-"""
-
-    user_prompt = f"Dialogue scene to translate with 2-step English reasoning:\n{json.dumps(dialogue_payload, ensure_ascii=False, indent=2)}"
-
-    candidate_models = []
-    for m in [effective_model, "gemini-flash-latest", "gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash-lite", "gemini-2.5-flash"]:
-        if m and m not in candidate_models:
-            candidate_models.append(m)
-
-    payload = {
-        "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-        "generationConfig": {
-            "temperature": 0.2,
-            "responseMimeType": "application/json",
-        },
-    }
-
-    last_err = None
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        for cur_model in candidate_models:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{cur_model}:generateContent?key={effective_key}"
-            try:
-                resp = await client.post(url, json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-                    parsed = json.loads(raw_text)
-                    trans_map = {}
-                    eng_map = {}
-                    for item in parsed:
-                        if "id" in item:
-                            trans_map[item["id"]] = item.get("translation", "")
-                            eng_map[item["id"]] = item.get("english_intent", "")
-
-                    for seg in segments:
-                        if seg["id"] in trans_map:
-                            t_val = trans_map[seg["id"]]
-                            # Clean any leftover watermark remnants
-                            t_val = re.sub(r'(?:4k|超清|漫剧|\b3473\b|\b1080p\b|\b720p\b|រឿងកំប្លែង\s*4k|4k\s*រឿងកំប្លែង|ច្បាស់បំផុត\s*3473|4k\s*ultra)', '', t_val, flags=re.IGNORECASE).strip()
-                            seg["translation"] = normalize_khmer_unicode(polish_khmer_dialogue(t_val))
-                        if seg["id"] in eng_map and eng_map[seg["id"]]:
-                            seg["english_intent"] = eng_map[seg["id"]]
-                    return segments
-                else:
-                    logger.warning(f"Model {cur_model} returned {resp.status_code}. Trying next model...")
-                    last_err = f"Gemini API returned {resp.status_code}: {resp.text}"
-            except Exception as ex:
-                logger.warning(f"Model {cur_model} failed: {ex}. Trying next model...")
-                last_err = str(ex)
-
-        raise RuntimeError(f"All Gemini models failed. Last error: {last_err}")
+        body = {"scene_before": context(context_before), "target_cues": cues,
+                "scene_after": context(context_after)}
+        if name_glossary:
+            body["name_glossary"] = name_glossary
+        translated = await request(prompt, body)
+        invalid = [cue for cue in cues if missing_character_names(
+            cue['text'], reviewed.get(str(cue['id'])) or str(translated.get(str(cue['id']), {}).get('translation', '')), name_glossary)]
+        if invalid:
+            # Retry only affected IDs with the same source and name evidence.
+            translated.update(await request(prompt + '\nCorrect the missing or altered character names. Keep every listed name exactly as specified.',
+                                             {**body, 'target_cues': invalid}))
+        for seg in segments:
+            if not evidence(seg)[2]:
+                continue
+            item = translated.get(str(seg["id"]), {})
+            value = reviewed.get(str(seg['id'])) or source_phrase_translation(evidence(seg)[2]) or item.get("translation", "")
+            value = clean_khmer(value, evidence(seg)[2]) if isinstance(value, str) else ""
+            if missing_character_names(source_text(seg), value, name_glossary):
+                seg["translation_error"] = "A source name or place is missing or mistranslated. Retry with the name glossary."
+                continue
+            if not value:
+                seg["translation_error"] = "Direct Khmer translation is missing. Retry this cue."
+                continue
+            store_khmer(seg, value, source_lang, tone)
+            if not store_english(seg, item.get("english_intent", ""), source_lang):
+                for field in ("english_intent", "english_evidence_key", "english_subtitle", "english_speech"):
+                    seg.pop(field, None)
+                seg["english_reference_error"] = "English reference unavailable; Khmer was translated directly from the source."
+            else:
+                seg.pop("english_reference_error", None)
+    require_translations(segments)
+    return segments
 
 
-async def translate_dialogue_clusters_free(
-    segments: List[Dict[str, Any]],
-    source_lang: str,
-    tone: str = "casual",
-    cluster_size: int = 8,
-    max_concurrency: int = 6,
-    on_progress=None,
-) -> List[Dict[str, Any]]:
-    """
-    Groups contiguous dialogue lines into numbered clusters before translating via
-    the free endpoint in parallel, cutting translation time from 20+ mins down to ~1 min.
-    """
-    import re
-    free_engine = get_engine("free")
-    pattern = re.compile(r"^\s*(\d+)[\.\:\)]\s*(.*)$")
-
-    chunks = [segments[i : i + cluster_size] for i in range(0, len(segments), cluster_size)]
-    if not chunks:
-        return segments
-
-    semaphore = asyncio.Semaphore(max_concurrency)
-    done_count = 0
-    lock = asyncio.Lock()
-
-    def parse_numbered_output(text: str, count: int) -> List[str]:
-        output = [""] * count
-        for raw_line in text.splitlines():
-            line_s = raw_line.strip()
-            m = pattern.match(line_s)
-            if m:
-                idx = int(m.group(1))
-                if 1 <= idx <= count:
-                    output[idx - 1] = m.group(2).strip()
-        # Fallback if numbering was stripped
-        if all(not x for x in output):
-            lines = [l.strip() for l in text.splitlines() if l.strip()]
-            for idx in range(min(count, len(lines))):
-                output[idx] = lines[idx]
-        return output
-
-    async def _translate_one_chunk(chunk: List[Dict[str, Any]]):
-        nonlocal done_count
-        texts = [s.get("text", "").strip() or "..." for s in chunk]
-        numbered_query = "\n".join(f"{idx}. {t}" for idx, t in enumerate(texts, start=1))
-
-        async with semaphore:
-            try:
-                if source_lang and source_lang.lower() not in ("en", "english"):
-                    eng_joined = await free_engine.translate(
-                        text=numbered_query,
-                        source_lang=source_lang,
-                        target_lang="en",
-                        tone=tone,
-                    )
-                    translated_joined = await free_engine.translate(
-                        text=eng_joined,
-                        source_lang="en",
-                        target_lang="km",
-                        tone=tone,
-                    )
-                else:
-                    eng_joined = numbered_query
-                    translated_joined = await free_engine.translate(
-                        text=numbered_query,
-                        source_lang=source_lang,
-                        target_lang="km",
-                        tone=tone,
-                    )
-
-                km_pieces = parse_numbered_output(translated_joined, len(chunk))
-                en_pieces = parse_numbered_output(eng_joined, len(chunk))
-
-                for idx, seg in enumerate(chunk):
-                    km_text = km_pieces[idx] if idx < len(km_pieces) and km_pieces[idx] else ""
-                    en_text = en_pieces[idx] if idx < len(en_pieces) and en_pieces[idx] else ""
-
-                    if km_text and km_text != "...":
-                        # Clean any stray watermark words
-                        km_text = re.sub(r'(?:4k|超清|漫剧|\b3473\b|\b1080p\b|\b720p\b|រឿងកំប្លែង\s*4k|4k\s*រឿងកំប្លែង|ច្បាស់បំផុត\s*3473|4k\s*ultra)', '', km_text, flags=re.IGNORECASE).strip()
-                        seg["translation"] = normalize_khmer_unicode(polish_khmer_dialogue(km_text))
-                    if en_text and en_text != "...":
-                        seg["english_intent"] = en_text
-
-            except Exception as e:
-                logger.warning(f"Chunk translate failed ({e}). Falling back for chunk...")
-                for s in chunk:
-                    t = s.get("text", "").strip()
-                    if t:
-                        try:
-                            eng = await free_engine.translate(t, source_lang, "en", tone=tone)
-                            res = await free_engine.translate(eng, "en", "km", tone=tone)
-                            s["english_intent"] = eng
-                            s["translation"] = normalize_khmer_unicode(polish_khmer_dialogue(res))
-                        except Exception:
-                            pass
-
-        async with lock:
-            done_count += 1
+async def translate_dialogue_segments(segments, source_lang, engine_name="auto", api_key=None, model=None,
+                                      base_url=None, tone="casual", on_progress=None, force=False, include_english=True):
+    engine = resolve_engine(engine_name, api_key, base_url)
+    names = translation_glossary(segments)
+    if engine.name == "free":
+        return await translate_dialogue_clusters_free(segments, source_lang, tone=tone, on_progress=on_progress,
+                                                     force=force, include_english=include_english, name_glossary=names)
+    provider = get_engine("openai")
+    _, url, selected_model = provider.request_settings({"api_key": api_key, "base_url": base_url, "model": model})
+    size = 8 if provider.generation_options(url, selected_model) else 30
+    total = (len(segments) + size - 1) // size
+    for number, start in enumerate(range(0, len(segments), size), 1):
+        chunk = [seg for seg in segments[start:start + size]
+                 if force or not current_translation(seg, source_lang, tone)]
+        if not chunk:
             if on_progress:
-                on_progress(done_count, len(chunks))
+                on_progress(number, total)
+            continue
+        for seg in chunk:
+            if evidence(seg)[2]:
+                seg["translation_error"] = "Direct Khmer translation pending."
+        try:
+            await translate_dialogue_batch_openai(chunk, source_lang, api_key, tone, model, base_url,
+                                                  context_before=segments[max(0, start-3):start],
+                                                  context_after=segments[start+size:start+size+3],
+                                                  **({'name_glossary': names} if names else {}))
+        except Exception as error:
+            logger.warning("Direct provider translation failed (%s); retrying missing cues through the free direct engine", error)
+            try:
+                pending = [seg for seg in chunk if not current_translation(seg, source_lang, tone)]
+                await translate_dialogue_clusters_free(pending, source_lang, tone=tone, include_english=include_english,
+                                                      name_glossary=names)
+            except MissingTranslationsError:
+                # Continue later batches; the recovery queue isolates these cues.
+                pass
+        if on_progress:
+            on_progress(number, total)
+    require_translations(segments)
+    return segments
 
-    tasks = [_translate_one_chunk(c) for c in chunks]
-    await asyncio.gather(*tasks)
+
+async def translate_dialogue_clusters_free(segments, source_lang, tone="casual", cluster_size=8,
+                                           max_concurrency=3, on_progress=None, force=False, include_english=True,
+                                           name_glossary=None):
+    """Translate each original cue directly, independently of optional English.
+
+    Unnumbered requests match standalone translation and cannot shuffle adjacent
+    cue outputs. Completed source checkpoints are reused during recovery.
+    """
+    engine = get_engine("free")
+    name_glossary = name_glossary or translation_glossary(segments)
+    semaphore = asyncio.Semaphore(max_concurrency)
+    chunks = [segments[start:start+cluster_size] for start in range(0, len(segments), cluster_size)]
+    completed = 0
+    following_by_identity = {id(cue): following for cue, following in zip(segments, segments[1:])}
+
+    async def translate_cue(seg):
+        original = source_text(seg)
+        if not original or (not force and current_translation(seg, source_lang, tone)):
+            return
+        seg["translation_error"] = "Direct Khmer translation pending."
+        following = following_by_identity.get(id(seg), {})
+        reviewed_value = reviewed_reassurance(original, evidence(following)[2], name_glossary) if (
+            isinstance(seg.get('id'), int) and following.get('id') == seg['id'] + 1) else ''
+        value = reviewed_value or source_phrase_translation(original) or native_phrase_translation(original, tone)
+        if not value:
+            for attempt in range(3):
+                try:
+                    result = await engine.translate(original, source_lang or "auto", "km", tone=tone)
+                    value = clean_khmer(result, original)
+                    if missing_character_names(original, value, name_glossary):
+                        value = ''
+                    if value:
+                        break
+                except Exception as error:
+                    logger.warning("Direct Khmer translation for cue %s failed: %s", seg.get("id"), error)
+                if attempt < 2:
+                    await asyncio.sleep(.5 * (attempt + 1))
+        if not value:
+            seg["translation_error"] = "Direct source-to-Khmer translation failed after three attempts. Retry this cue."
+            return
+        store_khmer(seg, value, source_lang, tone)
+
+        # This reference is never fed into Khmer translation and cannot block it.
+        for field in ("english_intent", "english_evidence_key", "english_subtitle", "english_speech"):
+            seg.pop(field, None)
+        if not include_english:
+            seg.pop("english_reference_error", None)
+            return
+        reference = source_english_phrase(original)
+        try:
+            if not reference:
+                reference = original if (source_lang or "auto").lower() in ("en", "english") else await engine.translate(
+                    original, source_lang or "auto", "en", tone=tone,
+                )
+            if store_english(seg, reference, source_lang):
+                seg.pop("english_reference_error", None)
+            else:
+                seg["english_reference_error"] = "English reference unavailable; Khmer was translated directly from the source."
+        except Exception:
+            seg["english_reference_error"] = "English reference unavailable; Khmer was translated directly from the source."
+
+    async def translate_chunk(chunk):
+        nonlocal completed
+        async with semaphore:
+            for seg in chunk:
+                await translate_cue(seg)
+        completed += 1
+        if on_progress:
+            on_progress(completed, len(chunks))
+
+    async with AsyncExitStack() as stack:
+        if isinstance(engine, FreeEngine):
+            engine = await stack.enter_async_context(engine.session())
+        await asyncio.gather(*(translate_chunk(chunk) for chunk in chunks))
+    require_translations(segments)
     return segments

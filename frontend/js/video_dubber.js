@@ -4,11 +4,456 @@
 
 let activeVideoJobId = null;
 let pollInterval = null;
+let isSubmittingVideo = false;
+let duplicateVideoSubmission = null;
+const savedPipelineProgress = new Map();
+let selectedVideoFiles = null;
+let selectedVideoSubtitles = null;
+let videoJobsRefreshing = false;
+const videoJobSummaries = new Map();
+const removingVideoJobs = new Set();
+let videoJobsGeneration = 0;
+const changingVideoJobs = new Set();
+const expandedVideoJobSteps = new Set();
+
+function setVideoSubmissionBusy(busy) {
+    isSubmittingVideo = busy;
+    for (const id of ['start-url-dub-btn', 'start-file-dub-btn']) {
+        const button = document.getElementById(id);
+        if (button) button.disabled = busy;
+    }
+    for (const id of ['video-file-input', 'video-sub-file-input']) {
+        const input = document.getElementById(id);
+        if (input) input.disabled = busy;
+    }
+}
+
+function showDuplicateVideoJob(detail, kind, file = null) {
+    duplicateVideoSubmission = { ...detail, kind, file };
+    document.getElementById('duplicate-job-card').style.display = 'block';
+    document.getElementById('duplicate-job-details').textContent =
+        `Job ${detail.job_id} · ${detail.progress}% · ${detail.stage || detail.status}. ` +
+        (detail.options_match ? 'Your processing settings match.' : 'Review the saved job settings before continuing.');
+    document.getElementById('duplicate-resume-btn').style.display =
+        ['interrupted', 'failed', 'paused'].includes(detail.status) ? '' : 'none';
+}
+
+async function chooseDuplicateJob(action) {
+    const duplicate = duplicateVideoSubmission;
+    if (!duplicate) return;
+    duplicateVideoSubmission = null;
+    document.getElementById('duplicate-job-card').style.display = 'none';
+    if (action === 'new') {
+        return duplicate.kind === 'file' ? handleFileDubbing(true, duplicate.file ? [duplicate.file] : null) : handleUrlDubbing(true);
+    }
+    if (action === 'resume') return resumeTrackedJob(duplicate.job_id);
+    return loadCompletedDemoJob(duplicate.job_id);
+}
+
+async function resumeTrackedJob(jobId = activeVideoJobId) {
+    if (!jobId || isSubmittingVideo || changingVideoJobs.has(jobId) || removingVideoJobs.has(jobId)) return;
+    changingVideoJobs.add(jobId);
+    const selectionGeneration = trackingGeneration;
+    setVideoSubmissionBusy(true);
+    renderVideoJobs();
+    try {
+        const response = await fetch(`/api/video/job/${jobId}/resume`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(getTranslationOptions())
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(videoApiError(data, 'Could not resume saved work'));
+        if (selectionGeneration === trackingGeneration) {
+            activeVideoJobId = jobId;
+            setPipelineUIState('active');
+            startPollingJobStatus(jobId);
+        }
+        refreshVideoJobs();
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        setVideoSubmissionBusy(false);
+        changingVideoJobs.delete(jobId);
+        renderVideoJobs();
+    }
+}
+
+async function changeVideoCheckpoint(jobId, action, step = null) {
+    if (changingVideoJobs.has(jobId) || removingVideoJobs.has(jobId)) return;
+    changingVideoJobs.add(jobId);
+    renderVideoJobs();
+    try {
+        const path = step ? `steps/${encodeURIComponent(step)}` : action;
+        const response = await fetch(`/api/video/job/${encodeURIComponent(jobId)}/${path}`, {
+            method: step ? 'DELETE' : 'POST'
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(videoApiError(data, 'Could not update saved work'));
+        videoJobsGeneration++;
+        const job = { ...videoJobSummaries.get(jobId), ...data, id: jobId };
+        if (step) {
+            delete job.download_url;
+            delete job.srt_url;
+        }
+        if (!step) job.stage = 'Paused — resume saved work';
+        videoJobSummaries.set(jobId, job);
+        savedPipelineProgress.set(jobId, job);
+        if (activeVideoJobId === jobId) {
+            trackingGeneration++;
+            if (pollInterval) clearInterval(pollInterval);
+            pollInterval = null;
+            updatePipelineProgress(job);
+        }
+        if (step && studioJobId === jobId) {
+            studioJobId = null;
+            studioSegments = [];
+            studioDirty = false;
+            currentDownloadJob = null;
+            document.getElementById('dubbed-video-player')?.pause();
+            document.getElementById('video-results-card').style.display = 'none';
+        }
+        showToast(step ? 'Saved step cleared. Resume to regenerate it.' : 'Paused. Completed work is saved.', 'success');
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        changingVideoJobs.delete(jobId);
+        renderVideoJobs();
+        refreshVideoJobs();
+    }
+}
+
+function renderJobCheckpoints(job) {
+    const details = document.createElement('details');
+    details.className = 'video-job-checkpoints';
+    details.open = expandedVideoJobSteps.has(job.id);
+    details.ontoggle = () => {
+        if (details.open) expandedVideoJobSteps.add(job.id);
+        else expandedVideoJobSteps.delete(job.id);
+    };
+    const summary = document.createElement('summary');
+    summary.textContent = 'Processing steps';
+    details.appendChild(summary);
+    const help = document.createElement('p');
+    help.textContent = 'Clear saved steps from the bottom up, then Resume to regenerate. Pause running tasks first. Source videos and previous exports are kept.';
+    details.appendChild(help);
+    const latest = [...(job.steps || [])].reverse().find(step => step.state !== 'pending');
+    for (const step of job.steps || []) {
+        const row = document.createElement('div');
+        row.className = 'video-job-checkpoint';
+        row.setAttribute('data-step', step.id);
+        row.setAttribute('data-state', step.state);
+        const label = document.createElement('span');
+        const state = { complete: 'Saved', partial: 'Partial', pending: 'Not started' }[step.state] || step.state;
+        label.textContent = `${step.number}. ${step.label} · ${state}`;
+        row.appendChild(label);
+        if (step.state !== 'pending') {
+            const clear = document.createElement('button');
+            clear.className = step.can_clear ? 'btn-secondary btn-sm' : 'btn-ghost btn-sm';
+            clear.textContent = 'Clear';
+            clear.setAttribute('aria-label', `Clear step ${step.number}: ${step.label}`);
+            clear.disabled = !step.can_clear || changingVideoJobs.has(job.id) || removingVideoJobs.has(job.id);
+            clear.title = step.can_clear ? `Clear saved ${step.label.toLowerCase()} and regenerate it on Resume` :
+                latest?.id !== step.id ? `Clear step ${latest?.number} (${latest?.label}) first` : 'Pause this task before clearing saved work';
+            clear.onclick = () => changeVideoCheckpoint(job.id, 'clear', step.id);
+            row.appendChild(clear);
+        }
+        details.appendChild(row);
+    }
+    return details;
+}
 
 document.addEventListener('DOMContentLoaded', () => {
     initVideoDubberEvents();
     initVoiceTunerControls();
+    let preferences = {};
+    try { preferences = JSON.parse(localStorage.getItem('khmer_video_render_options') || '{}'); } catch {}
+    applyVideoRenderOptions('video', preferences);
+    refreshVideoJobs();
+    setInterval(refreshVideoJobs, 2500);
 });
+
+function renderVideoJobs() {
+    const list = document.getElementById('video-jobs-list');
+    if (!list) return;
+    list.innerHTML = '';
+    const priority = status => ['processing', 'running', 'rendering'].includes(status) ? 0 : status === 'queued' ? 1 : 2;
+    const jobs = Array.from(videoJobSummaries.values()).sort((a, b) => priority(a.status) - priority(b.status));
+    for (const job of jobs) {
+        const row = document.createElement('div');
+        row.className = 'video-job-row';
+        row.setAttribute('data-status', job.status || 'queued');
+        row.setAttribute('aria-current', String(job.id === activeVideoJobId));
+        const info = document.createElement('div');
+        info.className = 'video-job-info';
+        const title = document.createElement('strong');
+        title.textContent = job.title || job.id;
+        const status = document.createElement('span');
+        const label = ['processing', 'running', 'rendering'].includes(job.status) ? 'Running' :
+            { queued: 'Queued', paused: 'Paused', pausing: 'Pausing' }[job.status] || job.status || 'Queued';
+        status.textContent = `${label} · ${job.progress || 0}% · ${job.stage || 'Queued'} · Job ${job.id}`;
+        info.appendChild(title);
+        info.appendChild(status);
+        if (job.error) {
+            const error = document.createElement('span');
+            error.className = 'video-job-error';
+            error.textContent = job.error;
+            info.appendChild(error);
+        }
+        const progress = document.createElement('progress');
+        progress.max = 100;
+        progress.value = job.progress || 0;
+        progress.setAttribute('aria-label', `Progress for ${job.title || job.id}`);
+        info.appendChild(progress);
+        const actions = document.createElement('div');
+        actions.className = 'video-job-actions';
+        const open = document.createElement('button');
+        open.className = 'btn-secondary btn-sm';
+        open.textContent = job.id === activeVideoJobId ? 'Viewing' : 'Open';
+        open.disabled = removingVideoJobs.has(job.id) || changingVideoJobs.has(job.id);
+        open.onclick = () => loadCompletedDemoJob(job.id);
+        actions.appendChild(open);
+        if (['queued', 'processing', 'running', 'rendering', 'pausing'].includes(job.status)) {
+            const pause = document.createElement('button');
+            pause.className = 'btn-secondary btn-sm';
+            pause.textContent = job.status === 'pausing' ? 'Pausing…' : 'Pause';
+            pause.disabled = job.status === 'pausing' || changingVideoJobs.has(job.id) || removingVideoJobs.has(job.id);
+            pause.onclick = () => changeVideoCheckpoint(job.id, 'pause');
+            actions.appendChild(pause);
+        }
+        if (['failed', 'interrupted', 'paused'].includes(job.status)) {
+            const resume = document.createElement('button');
+            resume.className = 'btn-primary btn-sm';
+            resume.textContent = 'Resume';
+            resume.disabled = isSubmittingVideo || removingVideoJobs.has(job.id) || changingVideoJobs.has(job.id);
+            resume.onclick = () => resumeTrackedJob(job.id);
+            actions.appendChild(resume);
+        }
+        for (const [field, label] of [['download_url', 'Video'], ['srt_url', 'Subtitles']]) {
+            if (!job[field]) continue;
+            const link = document.createElement('a');
+            link.className = 'btn-secondary btn-sm';
+            link.textContent = label;
+            link.href = job[field];
+            link.download = '';
+            actions.appendChild(link);
+        }
+        const remove = document.createElement('button');
+        remove.className = 'btn-ghost btn-sm video-task-remove';
+        remove.textContent = removingVideoJobs.has(job.id) ? 'Removing…' : 'Remove';
+        remove.disabled = removingVideoJobs.has(job.id) || changingVideoJobs.has(job.id);
+        remove.title = 'Stop and remove this task. Uploaded videos and completed exports are kept.';
+        remove.onclick = () => removeVideoTask(job.id);
+        actions.appendChild(remove);
+        row.appendChild(info);
+        row.appendChild(actions);
+        if (job.steps?.length) row.appendChild(renderJobCheckpoints(job));
+        list.appendChild(row);
+    }
+    if (!videoJobSummaries.size) list.textContent = 'No video jobs yet. Upload videos to start.';
+}
+
+async function refreshVideoJobs() {
+    if (videoJobsRefreshing) return;
+    videoJobsRefreshing = true;
+    const generation = videoJobsGeneration;
+    try {
+        const response = await fetch('/api/video/jobs');
+        if (response.status === 404) {
+            document.getElementById('video-jobs-summary').textContent = 'Restart the server to activate the updated job list.';
+            return;
+        }
+        if (!response.ok) throw new Error('Could not load video jobs');
+        const data = await response.json();
+        if (generation !== videoJobsGeneration) return;
+        videoJobSummaries.clear();
+        for (const job of data.jobs) videoJobSummaries.set(job.id, job);
+        renderVideoJobs();
+        const running = data.processing_count ?? Math.max(0, data.active_count - data.queued_count);
+        document.getElementById('video-jobs-summary').textContent =
+            `${running} / ${data.max_concurrent_jobs} running · ${data.queued_count} queued`;
+        const clearButton = document.getElementById('clear-video-tasks-btn');
+        if (clearButton) {
+            clearButton.disabled = data.active_count > 0 || isSubmittingVideo || removingVideoJobs.size > 0 || changingVideoJobs.size > 0;
+            clearButton.title = data.active_count > 0 ? 'Remove active tasks before clearing caches.' :
+                'Clear task history and processing caches. Uploaded videos and exports are kept.';
+        }
+    } catch (error) {
+        const summary = document.getElementById('video-jobs-summary');
+        if (summary) summary.textContent = 'Reconnecting to server...';
+    } finally {
+        videoJobsRefreshing = false;
+    }
+}
+
+function forgetVideoTask(jobId) {
+    videoJobSummaries.delete(jobId);
+    savedPipelineProgress.delete(jobId);
+    expandedVideoJobSteps.delete(jobId);
+    if (activeVideoJobId === jobId) {
+        trackingGeneration++;
+        if (pollInterval) clearInterval(pollInterval);
+        pollInterval = null;
+        activeVideoJobId = null;
+        localStorage.removeItem('khmer_active_video_job');
+        setPipelineUIState('idle');
+    }
+    if (studioJobId === jobId) {
+        studioJobId = null;
+        studioSegments = [];
+        studioDirty = false;
+        currentDownloadJob = null;
+        const player = document.getElementById('dubbed-video-player');
+        player?.pause();
+        player?.removeAttribute('src');
+        document.getElementById('video-results-card').style.display = 'none';
+    }
+    if (duplicateVideoSubmission?.job_id === jobId) {
+        duplicateVideoSubmission = null;
+        document.getElementById('duplicate-job-card').style.display = 'none';
+    }
+}
+
+async function removeVideoTask(jobId) {
+    if (removingVideoJobs.has(jobId) || changingVideoJobs.has(jobId)) return;
+    removingVideoJobs.add(jobId);
+    renderVideoJobs();
+    try {
+        const response = await fetch(`/api/video/job/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+        const data = await response.json();
+        if (!response.ok && response.status !== 404) throw new Error(videoApiError(data, 'Could not remove task'));
+        videoJobsGeneration++;
+        forgetVideoTask(jobId);
+        showToast('Task removed. Uploaded videos and completed exports are kept.', 'success');
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        removingVideoJobs.delete(jobId);
+        renderVideoJobs();
+    }
+}
+
+async function clearVideoTasksAndCache() {
+    if (isSubmittingVideo || removingVideoJobs.size || changingVideoJobs.size) return;
+    if (!window.confirm('Clear all task history, saved transcripts, generated voices and processing caches? Uploaded videos and completed exports will be kept.')) return;
+    const button = document.getElementById('clear-video-tasks-btn');
+    button.disabled = true;
+    setVideoSubmissionBusy(true);
+    try {
+        const response = await fetch('/api/video/jobs', { method: 'DELETE' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(videoApiError(data, 'Could not clear task caches'));
+        videoJobsGeneration++;
+        for (const id of new Set([...videoJobSummaries.keys(), activeVideoJobId, studioJobId])) {
+            if (id) forgetVideoTask(id);
+        }
+        videoJobSummaries.clear();
+        savedPipelineProgress.clear();
+        localStorage.removeItem('khmer_active_video_job');
+        selectVideoFiles([]);
+        selectedVideoSubtitles = [];
+        for (const id of ['video-file-input', 'video-sub-file-input']) document.getElementById(id).value = '';
+        document.getElementById('selected-sub-filename').style.display = 'none';
+        document.getElementById('video-upload-status').textContent = '';
+        showToast('Tasks and processing caches cleared. Ready for new videos.', 'success');
+        renderVideoJobs();
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        setVideoSubmissionBusy(false);
+        button.disabled = false;
+        refreshVideoJobs();
+    }
+}
+
+function selectVideoFiles(files) {
+    selectedVideoFiles = Array.from(files);
+    const totalMB = selectedVideoFiles.reduce((total, file) => total + file.size, 0) / (1024 * 1024);
+    document.getElementById('selected-video-filename').textContent = selectedVideoFiles.length
+        ? `${selectedVideoFiles.length} selected (${totalMB.toFixed(1)} MB): ${selectedVideoFiles.map(file => file.name).join(', ')}`
+        : 'Click or drag videos here';
+    document.getElementById('video-upload-action-wrap').style.display = selectedVideoFiles.length ? 'block' : 'none';
+}
+
+const DEFAULT_VIDEO_RENDER_OPTIONS = {
+    add_logo: false, logo_id: 'cinekhmer', blur_chinese_subtitles: false,
+    blur_x: 0.10, blur_y: 0.80, blur_width: 0.80, blur_height: 0.14, burn_subtitles: false
+};
+
+function getVideoRenderOptions(prefix = 'video') {
+    const options = { ...DEFAULT_VIDEO_RENDER_OPTIONS };
+    options.add_logo = Boolean(document.getElementById(`${prefix}-add-logo`)?.checked);
+    options.logo_id = document.getElementById(`${prefix}-logo-id`)?.value || options.logo_id;
+    options.blur_chinese_subtitles = Boolean(document.getElementById(`${prefix}-blur-subtitles`)?.checked);
+    const burnId = prefix === 'video' ? 'burn-subs-checkbox' : 'studio-burn-subs-checkbox';
+    options.burn_subtitles = Boolean(document.getElementById(burnId)?.checked);
+    for (const name of ['x', 'y', 'width', 'height']) {
+        const input = document.getElementById(`${prefix}-blur-${name}`);
+        const value = parseFloat(input?.value);
+        if (Number.isFinite(value)) options[`blur_${name}`] = value / 100;
+    }
+    return options;
+}
+
+function applyVideoRenderOptions(prefix, values = {}) {
+    const options = { ...DEFAULT_VIDEO_RENDER_OPTIONS, ...values };
+    const logo = document.getElementById(`${prefix}-logo-id`);
+    if (logo) {
+        if (options.logo_id.startsWith('custom_') && !Array.from(logo.options).some(item => item.value === options.logo_id)) {
+            const item = document.createElement('option');
+            item.value = options.logo_id;
+            item.textContent = 'Your uploaded logo';
+            logo.appendChild(item);
+        }
+        logo.value = options.logo_id;
+    }
+    for (const [suffix, value] of [['add-logo', options.add_logo], ['blur-subtitles', options.blur_chinese_subtitles]]) {
+        const input = document.getElementById(`${prefix}-${suffix}`);
+        if (input) input.checked = value;
+    }
+    const burn = document.getElementById(prefix === 'video' ? 'burn-subs-checkbox' : 'studio-burn-subs-checkbox');
+    if (burn) burn.checked = options.burn_subtitles;
+    for (const name of ['x', 'y', 'width', 'height']) {
+        const input = document.getElementById(`${prefix}-blur-${name}`);
+        if (input) input.value = Math.round(options[`blur_${name}`] * 100);
+    }
+    const preview = document.getElementById(`${prefix}-logo-preview`);
+    if (preview) preview.src = `/api/video/logo/${encodeURIComponent(options.logo_id)}`;
+}
+
+function onVideoEffectsChange(prefix) {
+    const options = getVideoRenderOptions(prefix);
+    const preview = document.getElementById(`${prefix}-logo-preview`);
+    if (preview) preview.src = `/api/video/logo/${encodeURIComponent(options.logo_id)}`;
+    try { localStorage.setItem('khmer_video_render_options', JSON.stringify(options)); } catch {}
+    if (prefix === 'studio') markStudioDirty();
+}
+
+function videoApiError(data, fallback) {
+    if (typeof data.detail === 'string') return data.detail;
+    if (Array.isArray(data.detail)) return data.detail.map(error => error.msg?.replace(/^Value error, /, '') || fallback).join('; ');
+    return fallback;
+}
+
+async function uploadVideoLogo(prefix, file) {
+    if (!file) return;
+    const uploadInput = document.getElementById(`${prefix}-logo-file`);
+    uploadInput.disabled = true;
+    try {
+        const form = new FormData();
+        form.append('file', file);
+        const response = await fetch('/api/video/logo', { method: 'POST', body: form });
+        const data = await response.json();
+        if (!response.ok) throw new Error(videoApiError(data, 'Logo upload failed'));
+        const options = { ...getVideoRenderOptions(prefix), add_logo: true, logo_id: data.logo_id };
+        applyVideoRenderOptions(prefix, options);
+        onVideoEffectsChange(prefix);
+        showToast('Logo ready: 40×40 px in the top-right corner.', 'success');
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        uploadInput.disabled = false;
+    }
+}
 
 // ─────────────────────────────────────────────
 // Voice Tuner Knobs (Rate, Pitch, Volume)
@@ -116,21 +561,25 @@ function initVideoDubberEvents() {
     }
 
     if (videoDropzone && videoFileInput) {
-        videoDropzone.addEventListener('click', () => videoFileInput.click());
+        videoDropzone.addEventListener('click', (event) => {
+            if (event.target !== videoFileInput && !isSubmittingVideo) videoFileInput.click();
+        });
         videoFileInput.addEventListener('change', (e) => {
-            if (e.target.files.length > 0) {
-                const file = e.target.files[0];
-                document.getElementById('selected-video-filename').textContent = `Selected: ${file.name} (${(file.size / (1024*1024)).toFixed(1)} MB)`;
-                document.getElementById('video-upload-action-wrap').style.display = 'block';
-            }
+            selectVideoFiles(e.target.files);
+        });
+        videoDropzone.addEventListener('dragover', (event) => event.preventDefault());
+        videoDropzone.addEventListener('drop', (event) => {
+            event.preventDefault();
+            if (!isSubmittingVideo) selectVideoFiles(event.dataTransfer.files);
         });
     }
 
     if (subFileInput) {
         subFileInput.addEventListener('change', (e) => {
+            selectedVideoSubtitles = Array.from(e.target.files);
             const subLabel = document.getElementById('selected-sub-filename');
             if (e.target.files.length > 0 && subLabel) {
-                subLabel.textContent = `Attached Subtitle: ${e.target.files[0].name}`;
+                subLabel.textContent = `Attached subtitles: ${Array.from(e.target.files).map(file => file.name).join(', ')}`;
                 subLabel.style.display = 'block';
             }
         });
@@ -202,7 +651,8 @@ function detectPlatformClient(url) {
 }
 
 // Start Dubbing from YouTube, Bilibili or Web URL
-async function handleUrlDubbing() {
+async function handleUrlDubbing(forceNew = false) {
+    if (isSubmittingVideo) return;
     const urlInput = document.getElementById('video-url-input');
     const url = urlInput.value.trim();
 
@@ -215,12 +665,10 @@ async function handleUrlDubbing() {
     const voiceType = document.getElementById('video-voice-select').value;
     const tone = document.getElementById('video-tone-select').value;
     const audioMode = document.getElementById('video-audio-mode').value;
-    const burnSubtitles = document.getElementById('burn-subs-checkbox').checked;
     const maxDur = parseInt(document.getElementById('video-duration-select')?.value ?? '0', 10);
-    const settings = getSavedSettings();
     const tuner = getVoiceTunerValues();
 
-    setPipelineUIState('active');
+    setVideoSubmissionBusy(true);
 
     try {
         const resp = await fetch('/api/video/dub-url', {
@@ -228,12 +676,13 @@ async function handleUrlDubbing() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 url: url,
+                force_new: forceNew === true,
                 voice_type: voiceType,
                 tone: tone,
                 audio_mode: audioMode,
-                burn_subtitles: burnSubtitles,
+                ...getVideoRenderOptions('video'),
                 max_duration: maxDur,
-                api_key: settings.geminiKey || null,
+                ...getTranslationOptions(),
                 voice_rate: tuner.rate,
                 voice_pitch: tuner.pitch,
                 voice_volume: tuner.volume
@@ -242,116 +691,222 @@ async function handleUrlDubbing() {
 
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({ detail: "Request failed" }));
-            throw new Error(err.detail || "Failed to start dubbing job");
+            if (resp.status === 409 && err.detail?.job_id) {
+                showDuplicateVideoJob(err.detail, 'url');
+                return;
+            }
+            throw new Error(videoApiError(err, "Failed to start dubbing job"));
         }
 
         const data = await resp.json();
+        if (data.reused && data.existing_job) {
+            showDuplicateVideoJob(data.existing_job, 'url');
+            return;
+        }
         activeVideoJobId = data.job_id;
+        setPipelineUIState('active');
         startPollingJobStatus(activeVideoJobId);
         showToast(`🎉 [${platform}] Dubbing job queued! Downloading and translating...`, "success");
     } catch (err) {
-        setPipelineUIState('idle');
         showToast(err.message, "error");
+    } finally {
+        setVideoSubmissionBusy(false);
     }
 }
 
-// Start Dubbing from Uploaded File
-async function handleFileDubbing() {
+// Each selected video uses the existing upload API, with bounded parallel uploads.
+function videoSubtitleAssignments(files, subtitles) {
+    const stem = name => name.replace(/\.[^.]+$/, '').toLowerCase();
+    if (files.length === 1 && subtitles.length <= 1) return [subtitles[0] || null];
+    const assignments = files.map(file => {
+        const matches = subtitles.filter(subtitle => stem(subtitle.name) === stem(file.name));
+        if (matches.length > 1) throw new Error(`Choose only one subtitle for ${file.name}.`);
+        return matches[0] || null;
+    });
+    for (const subtitle of subtitles) {
+        const count = assignments.filter(assigned => assigned === subtitle).length;
+        if (count !== 1) throw new Error(`Subtitle ${subtitle.name} must match exactly one video filename.`);
+    }
+    return assignments;
+}
+
+async function handleFileDubbing(forceNew = false, retryFiles = null) {
+    if (isSubmittingVideo) return;
     const fileInput = document.getElementById('video-file-input');
-    if (!fileInput.files || fileInput.files.length === 0) {
-        showToast("Please select a video file first", "error");
+    const files = retryFiles || selectedVideoFiles || Array.from(fileInput.files || []);
+    if (!files.length) {
+        showToast('Please select video files first', 'error');
         return;
     }
-
-    const file = fileInput.files[0];
-    const voiceType = document.getElementById('video-voice-select').value;
-    const tone = document.getElementById('video-tone-select').value;
-    const audioMode = document.getElementById('video-audio-mode').value;
-    const burnSubtitles = document.getElementById('burn-subs-checkbox').checked;
-    const maxDur = parseInt(document.getElementById('video-duration-select')?.value ?? '0', 10);
-    const settings = getSavedSettings();
-    const tuner = getVoiceTunerValues();
-
-    const formData = new FormData();
-    formData.append('file', file);
-    const subFileInput = document.getElementById('video-sub-file-input');
-    if (subFileInput && subFileInput.files && subFileInput.files.length > 0) {
-        formData.append('subtitle_file', subFileInput.files[0]);
+    const subtitles = selectedVideoSubtitles || Array.from(document.getElementById('video-sub-file-input')?.files || []);
+    let assignments;
+    try {
+        assignments = videoSubtitleAssignments(files, subtitles);
+    } catch (error) {
+        showToast(error.message, 'error');
+        return;
     }
-    formData.append('voice_type', voiceType);
-    formData.append('tone', tone);
-    formData.append('audio_mode', audioMode);
-    formData.append('burn_subtitles', burnSubtitles ? 'true' : 'false');
-    formData.append('max_duration', maxDur);
-    formData.append('voice_rate', tuner.rate);
-    formData.append('voice_pitch', tuner.pitch);
-    formData.append('voice_volume', tuner.volume);
-    if (settings.geminiKey) formData.append('api_key', settings.geminiKey);
+    const tuner = getVoiceTunerValues();
+    const settings = {
+        force_new: String(forceNew === true),
+        voice_type: document.getElementById('video-voice-select').value,
+        tone: document.getElementById('video-tone-select').value,
+        audio_mode: document.getElementById('video-audio-mode').value,
+        max_duration: parseInt(document.getElementById('video-duration-select')?.value ?? '0', 10),
+        voice_rate: tuner.rate, voice_pitch: tuner.pitch, voice_volume: tuner.volume,
+        ...getVideoRenderOptions('video'), ...getTranslationOptions()
+    };
+    const status = document.getElementById('video-upload-status');
+    let nextIndex = 0, finished = 0, accepted = 0, reused = 0;
+    let firstJobId = null, singleDuplicate = false;
+    const failures = [];
+    setVideoSubmissionBusy(true);
+    if (status) status.textContent = `Uploading ${files.length} video(s)...`;
 
-    setPipelineUIState('active');
+    async function uploadWorker() {
+        while (nextIndex < files.length) {
+            const index = nextIndex++;
+            const file = files[index];
+            const formData = new FormData();
+            formData.append('file', file);
+            if (assignments[index]) formData.append('subtitle_file', assignments[index]);
+            for (const [key, value] of Object.entries(settings)) {
+                if (value !== null && value !== undefined) formData.append(key, value);
+            }
+            try {
+                const response = await fetch('/api/video/dub-upload', { method: 'POST', body: formData });
+                const data = await response.json();
+                const duplicate = response.status === 409 ? data.detail : data.reused ? data.existing_job : null;
+                if (duplicate?.job_id) {
+                    reused++;
+                    if (files.length === 1) {
+                        singleDuplicate = true;
+                        showDuplicateVideoJob(duplicate, 'file', file);
+                    } else {
+                        firstJobId ||= duplicate.job_id;
+                        videoJobSummaries.set(duplicate.job_id, { ...duplicate, id: duplicate.job_id, title: file.name });
+                    }
+                } else {
+                    if (!response.ok) throw new Error(videoApiError(data, 'Upload failed'));
+                    accepted++;
+                    firstJobId ||= data.job_id;
+                    videoJobSummaries.set(data.job_id, {
+                        id: data.job_id, title: file.name, status: data.status || 'queued', progress: 0, stage: 'Queued'
+                    });
+                }
+                renderVideoJobs();
+            } catch (error) {
+                failures.push({ file, error: error.message });
+            } finally {
+                finished++;
+                if (status) status.textContent = `${finished}/${files.length} uploads checked · ${accepted} added · ${reused} saved jobs · ${failures.length} failed`;
+            }
+        }
+    }
 
     try {
-        const resp = await fetch('/api/video/dub-upload', {
-            method: 'POST',
-            body: formData
-        });
-
-        if (!resp.ok) {
-            const err = await resp.json().catch(() => ({ detail: "Upload failed" }));
-            throw new Error(err.detail || "Upload failed");
+        await Promise.all(Array.from({ length: Math.min(3, files.length) }, () => uploadWorker()));
+        if (firstJobId) {
+            activeVideoJobId = firstJobId;
+            setPipelineUIState('active');
+            startPollingJobStatus(firstJobId);
         }
-
-        const data = await resp.json();
-        activeVideoJobId = data.job_id;
-        startPollingJobStatus(activeVideoJobId);
-        showToast("Video uploaded! Starting transcription and dubbing...", "success");
-    } catch (err) {
-        setPipelineUIState('idle');
-        showToast(err.message, "error");
+        if (!singleDuplicate) {
+            selectVideoFiles(failures.map(failure => failure.file));
+            fileInput.value = '';
+            // Retain only sidecars for files that need retrying.
+            selectedVideoSubtitles = failures.length
+                ? failures.map(failure => assignments[files.indexOf(failure.file)]).filter(Boolean) : [];
+            const subInput = document.getElementById('video-sub-file-input');
+            if (subInput) subInput.value = '';
+            const subLabel = document.getElementById('selected-sub-filename');
+            if (subLabel) {
+                subLabel.textContent = selectedVideoSubtitles.map(file => file.name).join(', ');
+                subLabel.style.display = selectedVideoSubtitles.length ? 'block' : 'none';
+            }
+        }
+        if (failures.length) {
+            if (status) status.textContent += '. Failed: ' + failures.map(({file, error}) => `${file.name}: ${error}`).join('; ') + '. Click Add Videos to Queue to retry these files.';
+            showToast(`${failures.length} upload(s) failed. Other jobs continue processing.`, 'error');
+        } else if (accepted) {
+            showToast(`${accepted} video(s) added to the queue. Track each one in Video Jobs.`, 'success');
+        } else if (reused > 1) {
+            showToast(`${reused} saved jobs found. Open or resume them in Video Jobs.`, 'info');
+        }
+    } finally {
+        setVideoSubmissionBusy(false);
     }
 }
 
-// Poll Job Status with overlap protection
-let isPollingActive = false;
+// Each tracker owns its requests; stale replies cannot replace another job's progress.
+let trackingGeneration = 0;
 
 function startPollingJobStatus(jobId) {
     if (pollInterval) clearInterval(pollInterval);
-    isPollingActive = false;
-
-    pollInterval = setInterval(async () => {
-        if (isPollingActive) return; // Prevent request pile-up
-        isPollingActive = true;
-
+    const generation = ++trackingGeneration;
+    activeVideoJobId = jobId;
+    localStorage.setItem('khmer_active_video_job', jobId);
+    let busy = false;
+    const poll = async () => {
+        if (busy || generation !== trackingGeneration) return;
+        busy = true;
         try {
-            const resp = await fetch(`/api/video/status/${jobId}`);
+            const resp = await fetch(`/api/video/status/${jobId}?summary=true`);
+            if (resp.status === 404 && generation === trackingGeneration) {
+                forgetVideoTask(jobId);
+                return;
+            }
             if (!resp.ok) return;
-
-            const job = await resp.json();
+            let job = await resp.json();
+            if (generation !== trackingGeneration) return;
+            if (job.status === 'completed' || job.status === 'failed') {
+                const fullResponse = await fetch(`/api/video/status/${jobId}`);
+                if (!fullResponse.ok) return;
+                job = await fullResponse.json();
+                if (generation !== trackingGeneration) return;
+            }
             updatePipelineProgress(job);
-
             if (job.status === 'completed') {
                 clearInterval(pollInterval);
                 displayCompletedVideo(job);
-                showToast("🎉 Video dubbing complete! Ready to watch & download.", "success");
+                showToast(job.fallback_count ? `Video ready. ${job.fallback_count} cues use original speech after retries; review the flagged cues.` : "Video dubbing complete! Ready to watch & download.", job.fallback_count ? "warning" : "success");
             } else if (job.status === 'failed') {
                 clearInterval(pollInterval);
-                setPipelineUIState('idle');
+                if (job.segments?.length) displayCompletedVideo(job);
                 showToast(`Dubbing failed: ${job.error || "Unknown error"}`, "error");
+            } else if (['interrupted', 'paused'].includes(job.status)) {
+                clearInterval(pollInterval);
+                document.getElementById('pipeline-resume-btn').style.display = '';
+                showToast(job.status === 'paused' ? 'Paused. Resume saved work when ready.' :
+                    'Processing was interrupted. Resume saved work to continue this job.', 'info');
             }
-        } catch (err) {
-            console.error("Polling error:", err);
+        } catch (error) {
+            console.error("Polling error:", error);
         } finally {
-            isPollingActive = false;
+            busy = false;
         }
-    }, 1500);
+    };
+    pollInterval = setInterval(poll, 1500);
+    poll();
 }
 
 // Update Visual Pipeline Stages
 function updatePipelineProgress(job) {
+    if (job.id) savedPipelineProgress.set(job.id, job);
     const stageText = document.getElementById('pipeline-stage-text');
     const percentText = document.getElementById('pipeline-percent-text');
     const progressBar = document.getElementById('pipeline-progress-fill');
     const jobTitle = document.getElementById('pipeline-job-title');
+    const jobLabel = document.getElementById('pipeline-job-id');
+    if (jobLabel) jobLabel.textContent = job.id ? `Job ${job.id}` : '';
+    const resumeButton = document.getElementById('pipeline-resume-btn');
+    if (resumeButton) resumeButton.style.display = ['interrupted', 'failed', 'paused'].includes(job.status) ? '' : 'none';
+    const pauseButton = document.getElementById('pipeline-pause-btn');
+    if (pauseButton) {
+        pauseButton.style.display = ['queued', 'processing', 'running', 'rendering', 'pausing'].includes(job.status) ? '' : 'none';
+        pauseButton.textContent = job.status === 'pausing' ? 'Pausing…' : 'Pause';
+        pauseButton.disabled = job.status === 'pausing' || changingVideoJobs.has(job.id);
+    }
 
     if (stageText) stageText.textContent = job.stage || "Processing...";
     if (percentText) percentText.textContent = `${job.progress}%`;
@@ -367,9 +922,17 @@ function updatePipelineProgress(job) {
         { id: 'step-mix', threshold: 90 },
     ];
 
-    steps.forEach((s) => {
+    steps.forEach((s, index) => {
         const el = document.getElementById(s.id);
         if (el) {
+            el.classList.remove('completed', 'active');
+            const key = ['prepare', 'transcription', 'translation', 'voices', 'render'][index];
+            const checkpoint = job.steps?.[index] || (job.step_states?.[key] ? { state: job.step_states[key] } : null);
+            if (checkpoint) {
+                if (checkpoint.state === 'complete') el.classList.add('completed');
+                else if (checkpoint.state === 'partial') el.classList.add('active');
+                return;
+            }
             if (job.progress >= s.threshold) {
                 el.classList.add('completed');
                 el.classList.remove('active');
@@ -389,7 +952,18 @@ function updatePipelineProgress(job) {
 let studioJobId = null;
 let studioSegments = [];
 let studioDirty = false;
+let isRepairingMissing = false;
+let studioVoiceTunerSnapshot = null;
+let studioAudioSnapshot = '';
+let studioBackgroundSnapshot = '';
 let activeCueIndex = -1;
+
+function studioAudioFingerprint() {
+    return JSON.stringify(studioSegments.map(seg => ({
+        id: seg.id, start: seg.start, end: seg.end, translation: seg.translation,
+        voice_type: seg.voice_type, rate: seg.rate, pitch: seg.pitch, volume: seg.volume
+    })));
+}
 
 function displayCompletedVideo(job) {
     const resultsCard = document.getElementById('video-results-card');
@@ -397,22 +971,30 @@ function displayCompletedVideo(job) {
     const downloadVideoBtn = document.getElementById('download-dubbed-video-btn');
     const downloadSrtBtn = document.getElementById('download-dubbed-srt-btn');
 
-    if (!job || !job.result) return;
+    if (!job || (!job.result && !job.segments?.length)) return;
 
     currentDownloadJob = job;
     studioJobId = job.id;
     studioSegments = JSON.parse(JSON.stringify(job.segments || []));
+    studioVoiceTunerSnapshot = getVoiceTunerValues();
+    applyVideoRenderOptions('studio', job.render_options || job.result?.render_options || {});
 
     // Ensure every segment has voice_type
     studioSegments.forEach(s => {
-        if (!s.voice_type) s.voice_type = "male";
+        if (!s.voice_type) s.voice_type = job.voice_type || "male";
     });
+    studioAudioSnapshot = studioAudioFingerprint();
+    studioBackgroundSnapshot = document.getElementById('studio-bg-volume')?.value || '';
 
-    videoPlayer.src = job.result.download_url;
+    videoPlayer.style.display = job.result ? '' : 'none';
+    if (job.result) videoPlayer.src = job.result.download_url;
+    else videoPlayer.removeAttribute('src');
     if (downloadVideoBtn) {
+        downloadVideoBtn.disabled = !job.result;
         downloadVideoBtn.onclick = (e) => openDownloadModal('video', e);
     }
     if (downloadSrtBtn) {
+        downloadSrtBtn.disabled = !job.result;
         downloadSrtBtn.onclick = (e) => openDownloadModal('srt', e);
     }
 
@@ -481,6 +1063,9 @@ function renderStudioCueCards() {
     container.innerHTML = '';
 
     let overlapCount = 0;
+    const missingCount = studioSegments.filter(seg => (seg.text || '').trim() && !(seg.translation || '').trim()).length;
+    const repairBtn = document.getElementById('btn-translate-missing');
+    if (repairBtn) repairBtn.disabled = isRepairingMissing || missingCount === 0;
     const filterText = (document.getElementById('studio-search-input')?.value || '').toLowerCase().trim();
 
     studioSegments.forEach((seg, idx) => {
@@ -545,16 +1130,25 @@ function renderStudioCueCards() {
                         ${seg.ocr_detected ? '<span class="cue-ocr-badge"><i class="ph ph-subtitles"></i> Subtitle OCR</span>' : '<span class="cue-ocr-badge" style="color: #a855f7; background: rgba(168,85,247,0.12); border-color: rgba(168,85,247,0.25);"><i class="ph ph-microphone"></i> Audio</span>'}
                     </div>
                     ${seg.asr_text && seg.asr_text !== seg.text ? `
-                        <div class="cue-asr-hint">Audio speech heard: "${escapeHtml(seg.asr_text)}" (corrected by on-screen subtitle)</div>
+                        <div class="cue-asr-hint">Audio speech heard: "${escapeHtml(seg.asr_text)}"</div>
                     ` : ''}
                 </div>
                 ${seg.english_intent ? `
-                    <div class="cue-english-intent" title="Step 1: English Contextual Intent & Reasoning">
-                        <span class="badge-intent-tag">🇬🇧 English Intent:</span>
+                    <div class="cue-english-intent" title="Optional English reference. Direct Khmer translations use the original dialogue.">
+                        <span class="badge-intent-tag">🇬🇧 English reference:</span>
                         <span>${escapeHtml(seg.english_intent)}</span>
                     </div>
                 ` : ''}
                 <div class="cue-khmer-wrap">
+                    ${seg.translation_error || ((seg.text || '').trim() && !(seg.translation || '').trim()) ? `
+                        <div class="cue-translation-warning" role="status">
+                            <i class="ph ph-warning-circle"></i>
+                            ${escapeHtml(seg.translation_error || 'Khmer translation is missing. Use Translate Missing to retry.')}
+                        </div>
+                    ` : ''}
+                    ${seg.translation_warning ? `<div class="cue-translation-warning" role="status"><i class="ph ph-info"></i> ${escapeHtml(seg.translation_warning)}</div>` : ''}
+                    ${seg.source_warning ? `<div class="cue-translation-warning" role="status"><i class="ph ph-warning-circle"></i> ${escapeHtml(seg.source_warning)}</div>` : ''}
+                    ${seg.generation_warning ? `<div class="cue-translation-warning" role="status"><i class="ph ph-warning-circle"></i> ${escapeHtml(seg.generation_warning)}</div>` : ''}
                     <textarea 
                         class="cue-khmer-textarea" 
                         placeholder="Enter or edit Khmer translation..." 
@@ -584,7 +1178,7 @@ function renderStudioCueCards() {
         container.appendChild(card);
     });
 
-    if (countEl) countEl.textContent = `${studioSegments.length} Cues`;
+    if (countEl) countEl.textContent = `${studioSegments.length} Cues${missingCount ? ` · ${missingCount} untranslated` : ''}`;
     if (statusEl) {
         if (overlapCount > 0) {
             statusEl.className = 'badge-status has-collision';
@@ -614,12 +1208,19 @@ function onCueVoiceChange(index, val) {
 }
 
 // Time Adjustments
+function syncCueTiming(seg) {
+    seg.end = Math.max(seg.start + 0.1, seg.end);
+    seg.target_start = seg.start;
+    seg.target_end = seg.end;
+}
+
 function studioNudgeTime(index, field, delta) {
     if (!studioSegments[index]) return;
     studioSegments[index][field] = Math.max(0, parseFloat((studioSegments[index][field] + delta).toFixed(2)));
     if (field === 'start' && studioSegments[index].start >= studioSegments[index].end) {
         studioSegments[index].end = studioSegments[index].start + 0.5;
     }
+    syncCueTiming(studioSegments[index]);
     markStudioDirty();
     renderStudioCueCards();
 }
@@ -628,6 +1229,7 @@ function studioSetTime(index, field, val) {
     const num = parseFloat(val);
     if (!isNaN(num) && studioSegments[index]) {
         studioSegments[index][field] = Math.max(0, parseFloat(num.toFixed(2)));
+        syncCueTiming(studioSegments[index]);
         markStudioDirty();
         renderStudioCueCards();
     }
@@ -639,6 +1241,7 @@ function studioShiftFixCue(index) {
     const dur = Math.max(0.5, studioSegments[index].end - studioSegments[index].start);
     studioSegments[index].start = parseFloat((prev.end + 0.08).toFixed(2));
     studioSegments[index].end = parseFloat((studioSegments[index].start + dur).toFixed(2));
+    syncCueTiming(studioSegments[index]);
     markStudioDirty();
     renderStudioCueCards();
     showToast(`Shifted cue #${index + 1} to start at ${studioSegments[index].start}s`, "success");
@@ -646,6 +1249,8 @@ function studioShiftFixCue(index) {
 
 // Preview Single Khmer Voice Line via Edge-TTS
 async function studioPreviewCueVoice(index) {
+    const jobId = studioJobId;
+    const generation = trackingGeneration;
     const seg = studioSegments[index];
     if (!seg || !seg.translation.trim()) {
         showToast("Cannot preview empty translation", "error");
@@ -661,7 +1266,7 @@ async function studioPreviewCueVoice(index) {
 
     try {
         const tuner = getVoiceTunerValues();
-        const resp = await fetch(`/api/video/job/${studioJobId}/preview-segment`, {
+        const resp = await fetch(`/api/video/job/${jobId}/preview-segment`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -677,10 +1282,11 @@ async function studioPreviewCueVoice(index) {
 
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({ detail: "Preview failed" }));
-            throw new Error(err.detail);
+            throw new Error(videoApiError(err, "Voice preview failed"));
         }
 
         const data = await resp.json();
+        if (studioJobId !== jobId || generation !== trackingGeneration) return;
         const player = document.getElementById('segment-preview-player');
         if (player) {
             player.src = data.audio_url;
@@ -718,6 +1324,7 @@ function studioMergeWithNext(index) {
     const seg2 = studioSegments[index + 1];
 
     seg1.end = seg2.end;
+    syncCueTiming(seg1);
     seg1.text = `${seg1.text} ${seg2.text}`.trim();
     seg1.translation = `${seg1.translation} ${seg2.translation}`.trim();
     seg1._dirty = true;
@@ -752,6 +1359,8 @@ function studioAddNewCue() {
         _dirty: true
     };
 
+    syncCueTiming(newCue);
+
     // Insert sorted by start time
     const insertIdx = studioSegments.findIndex(s => s.start > curTime);
     if (insertIdx === -1) {
@@ -768,6 +1377,8 @@ function studioAddNewCue() {
 // Auto-Fix All Overlaps via Non-Collision Algorithm
 async function studioAutoFixOverlaps() {
     if (!studioJobId) return;
+    const jobId = studioJobId;
+    const generation = trackingGeneration;
 
     const btn = document.getElementById('btn-auto-fix-overlaps');
     const origHtml = btn ? btn.innerHTML : '';
@@ -778,19 +1389,21 @@ async function studioAutoFixOverlaps() {
 
     try {
         // Save current segments first
-        await fetch(`/api/video/job/${studioJobId}/segments`, {
+        const saved = await fetch(`/api/video/job/${jobId}/segments`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ segments: studioSegments })
         });
+        if (!saved.ok) throw new Error('Could not save cue changes');
 
-        const resp = await fetch(`/api/video/job/${studioJobId}/auto-fix-overlaps`, {
+        const resp = await fetch(`/api/video/job/${jobId}/auto-fix-overlaps`, {
             method: 'POST'
         });
 
         if (!resp.ok) throw new Error("Failed to auto-fix overlaps");
 
         const data = await resp.json();
+        if (studioJobId !== jobId || generation !== trackingGeneration) return;
         studioSegments = data.segments;
         renderStudioCueCards();
         showToast("⚡ All speech overlaps resolved! Zero collisions guaranteed.", "success");
@@ -807,6 +1420,8 @@ async function studioAutoFixOverlaps() {
 // Re-render Video with All Studio Edits
 async function studioRerenderVideo() {
     if (!studioJobId) return;
+    const jobId = studioJobId;
+    const generation = trackingGeneration;
 
     const btn = document.getElementById('btn-studio-rerender');
     const origHtml = btn.innerHTML;
@@ -827,45 +1442,41 @@ async function studioRerenderVideo() {
 
     try {
         const tuner = getVoiceTunerValues();
-        const resp = await fetch(`/api/video/job/${studioJobId}/rerender`, {
+        const recovery = currentDownloadJob?.status === 'failed';
+        const visualOnly = !recovery && currentDownloadJob?.result?.dubbed_video_path &&
+            !currentDownloadJob.needs_rerender && studioAudioFingerprint() === studioAudioSnapshot &&
+            studioVoiceTunerSnapshot?.rate === tuner.rate && studioVoiceTunerSnapshot?.pitch === tuner.pitch &&
+            studioVoiceTunerSnapshot?.volume === tuner.volume &&
+            (document.getElementById('studio-bg-volume')?.value || '') === studioBackgroundSnapshot;
+        const action = visualOnly ? 'visual-update' : 'resume';
+        const resp = await fetch(`/api/video/job/${jobId}/${action}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+            body: JSON.stringify(visualOnly ? getVideoRenderOptions('studio') : {
+                ...getTranslationOptions(),
                 segments: studioSegments,
                 audio_mode: audioMode,
                 bg_volume: bgVol,
-                burn_subtitles: false,
-                voice_rate: tuner.rate,
-                voice_pitch: tuner.pitch,
-                voice_volume: tuner.volume
+                ...getVideoRenderOptions('studio'),
+                voice_rate: studioVoiceTunerSnapshot?.rate === tuner.rate ? 'auto' : tuner.rate,
+                voice_pitch: studioVoiceTunerSnapshot?.pitch === tuner.pitch ? 'auto' : tuner.pitch,
+                voice_volume: studioVoiceTunerSnapshot?.volume === tuner.volume ? 'auto' : tuner.volume
             })
         });
 
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({ detail: "Re-render failed" }));
-            throw new Error(err.detail);
+            throw new Error(videoApiError(err, "Re-render failed"));
         }
 
-        const data = await resp.json();
-        const videoPlayer = document.getElementById('dubbed-video-player');
-        const dlVideoBtn = document.getElementById('download-dubbed-video-btn');
-        const dlSrtBtn = document.getElementById('download-dubbed-srt-btn');
-
-        // Reload video stream with cache-busting timestamp
-        const cacheBustUrl = `${data.result.download_url}?t=${Date.now()}`;
-        videoPlayer.src = cacheBustUrl;
-        videoPlayer.load();
-        videoPlayer.play();
-
-        if (currentDownloadJob) {
-            currentDownloadJob.result = data.result;
+        await resp.json();
+        if (studioJobId === jobId && generation === trackingGeneration) {
+            activeVideoJobId = jobId;
+            setPipelineUIState('active');
+            startPollingJobStatus(jobId);
         }
-
-        studioSegments = data.segments;
-        studioDirty = false;
-        renderStudioCueCards();
-
-        showToast("🎉 Video successfully re-rendered with your custom edits and zero voice collisions!", "success");
+        showToast(visualOnly ? 'Applying visual effects while preserving your finished audio.' :
+            'Continuing saved dialogue with automatic retries for failed cues.', 'success');
     } catch (e) {
         showToast("Re-render error: " + e.message, "error");
     } finally {
@@ -919,32 +1530,86 @@ function studioAlternateSpeakers() {
 
 async function studioPolishDialogue() {
     if (!studioJobId) return;
+    const jobId = studioJobId;
+    const generation = trackingGeneration;
     const btn = document.getElementById('btn-polish-dialogue');
     const origHtml = btn.innerHTML;
     btn.innerHTML = `<i class="ph ph-spinner ph-spin"></i> Polishing...`;
     btn.disabled = true;
 
-    const settings = getSavedSettings();
     try {
-        const resp = await fetch(`/api/video/job/${studioJobId}/ai-polish-dialogue`, {
+        const resp = await fetch(`/api/video/job/${jobId}/ai-polish-dialogue`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                api_key: settings.geminiKey || null,
-                tone: 'casual'
+                ...getTranslationOptions(),
+                tone: 'casual',
+                segments: studioSegments
             })
         });
         if (!resp.ok) throw new Error("Polishing dialogue failed");
         const data = await resp.json();
+        if (studioJobId !== jobId || generation !== trackingGeneration) return;
         studioSegments = data.segments;
         markStudioDirty();
         renderStudioCueCards();
-        showToast("✨ Dialogue polished! Translations now have natural conversational logic.", "success");
+        showToast(data.message || "Dialogue translated directly from the source. Review the Khmer before re-rendering.", data.status === 'partial' ? "warning" : "success");
     } catch (e) {
         showToast("Error: " + e.message, "error");
     } finally {
         btn.innerHTML = origHtml;
         btn.disabled = false;
+    }
+}
+
+async function studioTranslateMissing() {
+    if (!studioJobId || isRepairingMissing) return;
+    const jobId = studioJobId;
+    const generation = trackingGeneration;
+    const btn = document.getElementById('btn-translate-missing');
+    const originalHtml = btn.innerHTML;
+    const initialSegments = JSON.parse(JSON.stringify(studioSegments));
+    isRepairingMissing = true;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ph ph-spinner ph-spin"></i> Translating missing cues...';
+    try {
+        const response = await fetch(`/api/video/job/${jobId}/translate-missing`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...getTranslationOptions(), segments: initialSegments, tone: 'casual' })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || 'Could not translate missing dialogue');
+        if (studioJobId !== jobId || generation !== trackingGeneration) return;
+        // Preserve any text typed while the repair request was running.
+        const originals = new Map(initialSegments.map(seg => [seg.id, seg]));
+        const repaired = new Map(data.segments.map(seg => [seg.id, seg]));
+        studioSegments = studioSegments.map(seg => {
+            const original = originals.get(seg.id);
+            const replacement = repaired.get(seg.id);
+            if (!original || !replacement || ((original.translation || '').trim() && !original.translation_error) ||
+                seg.translation !== original.translation || seg.text !== original.text) return seg;
+            return { ...seg, translation: replacement.translation, english_intent: replacement.english_intent,
+                translation_flow: replacement.translation_flow, translation_source_key: replacement.translation_source_key,
+                translation_source_text: replacement.translation_source_text, source_warning: replacement.source_warning,
+                translation_warning: replacement.translation_warning, english_evidence_key: replacement.english_evidence_key,
+                english_reference_error: replacement.english_reference_error,
+                translation_error: replacement.translation_error, audio_file: replacement.audio_file,
+                audio_source: replacement.audio_source, generation_warning: replacement.generation_warning,
+                review_required: replacement.review_required, fallback_subtitle: replacement.fallback_subtitle,
+                _dirty: replacement._dirty };
+        });
+        if (data.repaired_count) markStudioDirty();
+        const message = data.remaining_count
+            ? `${data.repaired_count} cues translated; ${data.remaining_count} still need a retry.`
+            : `${data.repaired_count} missing cues translated. Re-render to update the video audio.`;
+        showToast(message, data.remaining_count ? 'error' : 'success');
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        isRepairingMissing = false;
+        btn.innerHTML = originalHtml;
+        renderStudioCueCards();
     }
 }
 
@@ -965,9 +1630,18 @@ function setPipelineUIState(state) {
     if (state === 'active') {
         pipelineCard.style.display = 'block';
         document.getElementById('video-results-card').style.display = 'none';
-        document.getElementById('pipeline-progress-fill').style.width = '5%';
-        document.getElementById('pipeline-percent-text').textContent = '5%';
-        document.getElementById('pipeline-stage-text').textContent = 'Starting pipeline...';
+        document.getElementById('pipeline-progress-fill').style.width = '0%';
+        document.getElementById('pipeline-percent-text').textContent = '…';
+        document.getElementById('pipeline-stage-text').textContent = 'Loading saved progress...';
+        document.getElementById('pipeline-resume-btn').style.display = 'none';
+        const pauseButton = document.getElementById('pipeline-pause-btn');
+        if (pauseButton) pauseButton.style.display = 'none';
+        document.getElementById('pipeline-job-title').textContent = 'Video task';
+        document.getElementById('pipeline-job-id').textContent = activeVideoJobId ? `Job ${activeVideoJobId}` : '';
+        for (const id of ['step-dl', 'step-stt', 'step-trans', 'step-tts', 'step-mix']) {
+            document.getElementById(id)?.classList.remove('completed', 'active');
+        }
+        if (savedPipelineProgress.has(activeVideoJobId)) updatePipelineProgress(savedPipelineProgress.get(activeVideoJobId));
     } else {
         pipelineCard.style.display = 'none';
     }
@@ -987,17 +1661,27 @@ function fillBilibiliSample() {
 }
 
 async function loadCompletedDemoJob(jobId = 'bea1cc9b') {
+    const generation = ++trackingGeneration;
+    if (pollInterval) clearInterval(pollInterval);
     try {
         const resp = await fetch(`/api/video/status/${jobId}`);
         if (!resp.ok) {
+            if (resp.status === 404 && generation === trackingGeneration) {
+                forgetVideoTask(jobId);
+                return;
+            }
             showToast("Job not found or expired", "error");
             return;
         }
         const job = await resp.json();
-        if (job.status === 'completed') {
+        if (generation !== trackingGeneration) return;
+        activeVideoJobId = jobId;
+        renderVideoJobs();
+        localStorage.setItem('khmer_active_video_job', jobId);
+        if (job.status === 'completed' || (job.status === 'failed' && job.segments?.length)) {
             displayCompletedVideo(job);
             showToast(`Loaded CapCut Dubbing Studio for ${job.title || jobId}!`, "success");
-        } else if (job.status === 'processing' || job.status === 'queued') {
+        } else if (['processing', 'queued', 'interrupted', 'failed', 'paused', 'pausing', 'running', 'rendering'].includes(job.status)) {
             setPipelineUIState('active');
             updatePipelineProgress(job);
             startPollingJobStatus(jobId);
@@ -1013,7 +1697,7 @@ async function loadCompletedDemoJob(jobId = 'bea1cc9b') {
 // Auto-check for job parameter in URL on load
 document.addEventListener('DOMContentLoaded', () => {
     const urlParams = new URLSearchParams(window.location.search);
-    const jobParam = urlParams.get('job');
+    const jobParam = urlParams.get('job') || localStorage.getItem('khmer_active_video_job');
     if (jobParam) {
         loadCompletedDemoJob(jobParam);
     }

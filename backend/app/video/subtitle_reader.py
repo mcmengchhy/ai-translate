@@ -66,56 +66,36 @@ def parse_srt_or_vtt(subtitle_file_path: str) -> List[Dict[str, Any]]:
     """
     Parses an SRT or VTT subtitle file into standard timestamped segment dictionaries.
     """
-    content = Path(subtitle_file_path).read_text(encoding="utf-8", errors="ignore")
-    lines = content.splitlines()
-
+    content = Path(subtitle_file_path).read_text(encoding="utf-8-sig", errors="ignore")
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
     segments = []
-    current_cue = {}
-    text_buffer = []
+    timestamp = r"(?:\d+:)?\d{2}:\d{2}[,.]\d{1,3}"
+    time_pattern = re.compile(rf"^({timestamp})\s*-->\s*({timestamp})(?:\s+.*)?$")
 
-    def _parse_time(t_str: str) -> float:
-        t_str = t_str.strip().replace(",", ".")
-        parts = t_str.split(":")
+    def parse_time(value: str) -> float:
+        parts = value.replace(",", ".").split(":")
         if len(parts) == 3:
-            h, m, s = parts
-            return int(h) * 3600 + int(m) * 60 + float(s)
-        elif len(parts) == 2:
-            m, s = parts
-            return int(m) * 60 + float(s)
-        return float(t_str)
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        return int(parts[0]) * 60 + float(parts[1])
 
-    time_pattern = re.compile(r"(\d{1,2}:\d{2}:\d{2}[,\.]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,\.]\d{1,3})")
-
-    cue_id = 1
-    for line in lines:
-        line_s = line.strip()
-        time_match = time_pattern.search(line_s)
-        if time_match:
-            if current_cue and text_buffer:
-                current_cue["text"] = " ".join(text_buffer).strip()
-                if current_cue["text"]:
-                    segments.append(current_cue)
-                text_buffer = []
-
-            start_t = _parse_time(time_match.group(1))
-            end_t = _parse_time(time_match.group(2))
-            current_cue = {
-                "id": cue_id,
-                "start": round(start_t, 2),
-                "end": round(end_t, 2),
-                "source": "subtitle_file"
-            }
-            cue_id += 1
-        elif line_s.isdigit() and not text_buffer:
+    for block in re.split(r"\n[ \t]*\n", content.strip()):
+        lines = block.splitlines()
+        if not lines or lines[0].strip().split(" ", 1)[0] in ("NOTE", "STYLE", "REGION"):
             continue
-        elif line_s:
-            if current_cue:
-                text_buffer.append(line_s)
-
-    if current_cue and text_buffer:
-        current_cue["text"] = " ".join(text_buffer).strip()
-        if current_cue["text"]:
-            segments.append(current_cue)
+        for index, line in enumerate(lines):
+            match = time_pattern.fullmatch(line.strip())
+            if not match:
+                continue
+            text = " ".join(part.strip() for part in lines[index + 1:]).strip()
+            if text:
+                segments.append({
+                    "id": len(segments) + 1,
+                    "start": round(parse_time(match.group(1)), 2),
+                    "end": round(parse_time(match.group(2)), 2),
+                    "text": text,
+                    "source": "subtitle_file",
+                })
+            break
 
     logger.info(f"Parsed {len(segments)} subtitle segments from {subtitle_file_path}")
     return segments
