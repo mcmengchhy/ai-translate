@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Khmer exports &amp; replacement video</title>
+    <link rel="stylesheet" href="/static/css/reuse.css?v=20261126-1">
+    <script src="/static/js/reuse.js?v=20261126-2" defer></script>
+</head>
+<body>
+<main>
+    <header><a href="/">Video jobs &amp; editor</a><a href="/static/clip-editor.html">Quick clip editor · upload &amp; edit</a></header>
+    <section class="intro">
+        <p class="eyebrow">REUSE YOUR SAVED VOICES</p>
+        <h1>Khmer exports &amp; replacement video</h1>
+        <p>Download narration and timed subtitles for many videos together, or put saved Khmer voices onto your own or licensed replacement video. Your original jobs and exports are kept.</p>
+    </section>
+    <p id="message" role="status" aria-live="polite"></p>
+    <div class="workspace">
+        <section class="panel" aria-labelledby="batch-title">
+            <div class="heading"><h2 id="batch-title">Batch audio &amp; subtitles</h2><button id="refresh-jobs">Refresh jobs</button></div>
+            <p class="hint">Each job includes a stereo Khmer WAV and UTF-8 SRT. Original soundtracks and added effects are excluded. Up to 100 jobs per ZIP.</p>
+            <div class="toolbar"><label><input type="checkbox" id="select-ready"> Select all ready jobs</label><span id="selection-count" aria-live="polite">0 selected</span></div>
+            <div id="job-list" class="job-list" aria-label="Saved video jobs"><p>Loading saved jobs…</p></div>
+            <button class="primary" id="export-selected" disabled>Export selected jobs (.zip)</button>
+            <p class="hint">If a job has missing or outdated voices, open it in the editor and retry Khmer voices first.</p>
+        </section>
+        <section class="panel" aria-labelledby="replacement-title">
+            <h2 id="replacement-title">Render replacement video</h2>
+            <p class="hint">Keep the Khmer timeline and replace all visuals for one job. The replacement video's audio is discarded.</p>
+            <form id="replacement-form">
+                <label for="replacement-job">Saved Khmer narration</label>
+                <select id="replacement-job" required><option value="">Choose a ready job</option></select>
+                <label for="replacement-file">Replacement video</label>
+                <input id="replacement-file" type="file" accept="video/*,.mp4,.mov,.mkv,.webm" required>
+                <label for="replacement-ending">When the video is shorter than the narration</label>
+                <select id="replacement-ending"><option value="loop">Loop the replacement video</option><option value="freeze">Hold its last frame</option></select>
+                <p class="hint">Longer videos are trimmed to the narration duration.</p>
+                <label class="check"><input id="replacement-captions" type="checkbox" checked> Burn Khmer captions into the video</label>
+                <button class="primary" id="render-replacement" type="submit">Render replacement video</button>
+            </form>
+        </section>
+    </div>
+    <section class="panel history" aria-labelledby="history-title">
+        <div class="heading"><h2 id="history-title">Recent exports</h2><button id="refresh-exports">Refresh exports</button></div>
+        <p class="hint">Exports run in the background. You can leave this page and return to download them.</p>
+        <div id="export-list" aria-live="polite"><p>No exports yet.</p></div>
+    </section>
+</main>
+</body>
+</html>

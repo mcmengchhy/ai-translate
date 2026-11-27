@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Processing details · Khmer Video Dubber</title>
+    <link rel="stylesheet" href="/static/css/processing.css?v=20261119-missing-board-1">
+    <script src="/static/js/processing.js?v=20261119-missing-board-1" defer></script>
+</head>
+<body>
+<main>
+    <header>
+        <a href="/" id="open-editor">← Video jobs &amp; editor</a>
+        <span id="job-number"></span>
+    </header>
+    <section class="intro">
+        <p class="eyebrow">YOUR MANUAL TRANSLATION WORKSPACE</p>
+        <h1>Processing details</h1>
+        <h2 id="job-title">Loading video…</h2>
+        <p>Copy the extracted Chinese or original dialogue into Google Translate. Bring the Khmer text back here, review it, then generate voices and video. Ollama is not needed for this workflow.</p>
+    </section>
+    <div id="message" role="status" aria-live="polite"></div>
+    <section class="status-card" aria-label="Processing status">
+        <div><span class="eyebrow">CURRENT STEP</span><p id="job-stage">Connecting…</p></div>
+        <div><span class="eyebrow">TRANSLATIONS</span><p id="translation-count">—</p></div>
+        <div class="actions">
+            <button id="pause-job" hidden>Pause task</button>
+            <button id="enable-manual" hidden>Use manual translation</button>
+            <button id="refresh-details">Refresh</button>
+        </div>
+    </section>
+    <ol class="workflow">
+        <li>Extract speech &amp; subtitles</li><li>Translate &amp; review Khmer</li><li>Generate voices &amp; video</li>
+    </ol>
+    <section id="empty-state" class="panel" hidden>
+        <h2>Original dialogue is not ready yet</h2>
+        <p>For a new upload, choose <strong>Manual — copy text to Google Translate</strong>. The task will extract speech and subtitles, then wait here. This page updates while extraction runs.</p>
+        <p>For an interrupted extraction, resume the task in Video Jobs. Speech recognition and subtitle OCR still use local processing memory.</p>
+    </section>
+    <section id="translation-workspace" hidden>
+        <section id="missing-board" class="panel missing-board" aria-labelledby="missing-board-title" hidden>
+            <div class="panel-heading">
+                <div><p class="eyebrow">FIX ONLY THE MISSING TRANSLATIONS</p><h2 id="missing-board-title">Missing cues board</h2></div>
+                <span id="missing-board-count" class="missing-board-badge"></span>
+            </div>
+            <p class="hint">All missing or invalid translations from every text batch are collected here. Copy the original lines, translate them to Khmer, then paste back the same cue numbers.</p>
+            <div id="missing-board-message" class="missing-board-message" role="status" aria-live="polite"></div>
+            <div id="missing-board-grid" class="translation-grid">
+                <div>
+                    <label for="missing-board-source">1. All missing original lines</label>
+                    <textarea id="missing-board-source" readonly spellcheck="false"></textarea>
+                    <div class="actions">
+                        <button id="copy-missing-cues" class="primary">Copy all missing cues</button>
+                        <a href="https://translate.google.com/?sl=auto&amp;tl=km&amp;op=translate" target="_blank" rel="noopener noreferrer" class="button">Open Google Translate ↗</a>
+                    </div>
+                </div>
+                <div>
+                    <label for="missing-board-input">2. Paste Khmer for these cue numbers</label>
+                    <textarea id="missing-board-input" spellcheck="false" aria-describedby="missing-board-message" placeholder="Keep each [cue number] before its Khmer translation."></textarea>
+                    <div class="actions">
+                        <button id="format-missing-cues">Format &amp; check</button>
+                        <button id="save-missing-cues" class="primary">Update missing translations</button>
+                    </div>
+                    <p class="hint">Only these missing cues are updated. Saved translations, timing, and successful voice clips are kept. Your paste is kept in this tab until it is saved.</p>
+                </div>
+            </div>
+            <p id="missing-board-empty" class="missing-board-complete" hidden>All extracted cues have Khmer text. You can continue generating voices and video below.</p>
+        </section>
+        <div class="batch-toolbar">
+            <div class="actions">
+                <button id="previous-batch" aria-label="Previous text batch">← Previous</button>
+                <label for="batch-select">Text batch</label>
+                <select id="batch-select"></select>
+                <button id="next-batch" aria-label="Next text batch">Next →</button>
+            </div>
+            <a id="download-all" class="button" download>Download all original text (.txt)</a>
+        </div>
+        <p class="hint">Translate one batch at a time. Keep every numbered marker, for example <strong>[12]</strong>, with its translated sentence. Blank lines and several markers on one line are fine. These numbers preserve the video timing; restore any missing markers before importing.</p>
+        <div class="translation-grid">
+            <section class="panel">
+                <div class="panel-heading"><h2>1. Copy original dialogue</h2><span id="source-language"></span></div>
+                <label for="source-text">Original text for this batch</label>
+                <textarea id="source-text" readonly spellcheck="false"></textarea>
+                <div class="actions">
+                    <button id="copy-original" class="primary">Copy original text</button>
+                    <a id="download-batch" class="button" download>Download batch .txt</a>
+                    <a href="https://translate.google.com/?sl=auto&amp;tl=km&amp;op=translate" target="_blank" rel="noopener noreferrer" class="button">Open Google Translate ↗</a>
+                </div>
+                <p class="hint">Paste the copied text on the left of Google Translate and select Khmer on the right. Copy its translated output.</p>
+            </section>
+            <section class="panel">
+                <div class="panel-heading"><h2>2. Bring back Khmer text</h2><span id="draft-status"></span></div>
+                <aside id="translation-validation" class="translation-validation" aria-labelledby="translation-validation-title" aria-live="polite" hidden>
+                    <h3 id="translation-validation-title"></h3>
+                    <p id="translation-validation-message"></p>
+                    <div id="missing-cue-list" class="missing-cue-list"></div>
+                </aside>
+                <label for="khmer-text">Khmer translation with the same cue numbers</label>
+                <textarea id="khmer-text" spellcheck="false" aria-describedby="translation-validation" placeholder="[1] សូមបញ្ចូលការបកប្រែខ្មែរនៅទីនេះ។"></textarea>
+                <div class="actions">
+                    <label class="button file-button">Load translated .txt<input type="file" id="translation-file" accept=".txt,text/plain"></label>
+                    <button id="format-translations">Format &amp; sort</button>
+                    <button id="save-translations" class="primary">Check &amp; save this batch</button>
+                </div>
+                <p class="hint">Pasted text and loaded files are sorted into the original cue order, one cue per line. Formatting removes extra blank lines and repeated spaces, and converts markers such as [១១៨០] to [1180]. It keeps your Khmer words. Missing, duplicated, or unexpected cue numbers are checked before saving. Unsubmitted text is kept in this browser tab.</p>
+            </section>
+        </div>
+        <section class="panel review-panel">
+            <h2>3. Review saved dialogue</h2>
+            <p class="hint">Check meaning, names, and natural Khmer phrasing. Imported words remain exactly as entered. The video editor lets you edit individual cues.</p>
+            <div class="table-scroll"><table><thead><tr><th>Cue / time</th><th>Original</th><th>Saved Khmer</th></tr></thead><tbody id="review-rows"></tbody></table></div>
+        </section>
+        <section class="panel finish-panel">
+            <div><h2>Ready for voiceover?</h2><p id="finish-help">Save all translated batches first.</p><p class="hint">Voice generation needs internet access. Speech extraction and final rendering still use local RAM.</p></div>
+            <button id="generate-video" class="primary" disabled>Generate Khmer voices &amp; video</button>
+        </section>
+    </section>
+</main>
+</body>
+</html>

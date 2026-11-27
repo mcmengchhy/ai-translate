@@ -242,7 +242,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                 await synthesize_segments(cues(), Path(directory))
             speech.assert_not_called()
 
-    async def test_pipeline_completes_other_voices_and_flags_original_speech_fallback(self):
+    async def test_pipeline_retains_other_voices_but_blocks_rendering_unresolved_khmer_audio(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "movie.mp4"
@@ -265,10 +265,12 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                     seg["audio_file"] = str(audio)
 
             speech = AsyncMock(side_effect=generate)
-            with patch.dict(pipeline.JOBS, {"test": job}), patch.object(pipeline, "_save_job"), patch.object(pipeline, "transcribe_video_audio", new=AsyncMock(return_value={"segments": segments, "language": "zh"})), patch("backend.app.engines.dialogue_translator.translate_dialogue_segments", new=AsyncMock(side_effect=partial)), patch("backend.app.video.recovery.extract_original_speech", return_value=str(audio)), patch.object(pipeline, "synthesize_segments", speech), patch.object(pipeline, "assemble_dubbed_video", new=AsyncMock(return_value={})):
+            with patch.dict(pipeline.JOBS, {"test": job}), patch.object(pipeline, "_save_job"), patch.object(pipeline, "transcribe_video_audio", new=AsyncMock(return_value={"segments": segments, "language": "zh"})), patch("backend.app.engines.dialogue_translator.translate_dialogue_segments", new=AsyncMock(side_effect=partial)), patch("backend.app.video.recovery.extract_original_speech", return_value=str(audio)) as original, patch.object(pipeline, "synthesize_segments", speech), patch.object(pipeline, "assemble_dubbed_video", new=AsyncMock(return_value={})) as render:
                 await pipeline.run_video_dubbing_pipeline("test", str(source), is_url=False)
-            self.assertEqual(job["status"], "completed")
-            self.assertEqual(job["fallback_count"], 2)
+            self.assertEqual(job["status"], "failed")
+            self.assertIn('Khmer voice is missing', job['error'])
+            render.assert_not_awaited()
+            original.assert_not_called()
             self.assertEqual(job["segments"][0]["translation"], "សៀវភៅ")
             speech.assert_awaited_once()
             self.assertEqual(len(speech.await_args.args[0]), 1)

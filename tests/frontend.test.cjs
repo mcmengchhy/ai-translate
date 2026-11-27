@@ -103,6 +103,175 @@ test('uploaded dubbing sends provider settings in multipart form data', async ()
     assertProvider(h.requests[0].body);
 });
 
+test('manual workflow is included in both URL and upload submissions', async () => {
+    const h = harness(preferences);
+    h.element('video-translation-mode').value = 'manual';
+    h.element('video-url-input').value = 'https://example.com/manual.mp4';
+    await h.run('handleUrlDubbing()');
+    h.element('video-file-input').files = [{ name: 'manual.mp4' }];
+    await h.run('handleFileDubbing()');
+    assert.equal(h.requests.length, 2);
+    assert.equal(h.requests[0].body.manual_translation, true);
+    assert.equal(h.requests[1].body.manual_translation, true);
+});
+
+test('waiting translation jobs offer Processing details without automatic Resume', () => {
+    const h = harness();
+    h.run("videoJobSummaries.set('manual', {id:'manual',title:'Episode',status:'awaiting_translation',progress:50}); renderVideoJobs()");
+    const actions = h.element('video-jobs-list').children[0].children[1].children;
+    assert.equal(actions.find(child => child.textContent === 'Processing details').href, '/static/processing.html?job=manual');
+    assert.equal(actions.some(child => child.textContent === 'Resume'), false);
+});
+
+test('a waiting card provides a fix-and-continue link for its missing Khmer cues', () => {
+    const h = harness();
+    h.run(`videoJobSummaries.set('manual',{id:'manual',status:'awaiting_translation',total_cues:734,
+        translated_cues:731,missing_cues:3,missing_cue_ids:[127,129,355]});renderVideoJobs()`);
+    const actions = h.element('video-jobs-list').children[0].children[1].children;
+    const fix = actions.find(child=>child.textContent==='Fix 3 cues & continue');
+    assert.equal(fix.href,'/static/processing.html?job=manual&fix=missing#missing-board');
+    assert.equal(fix.target,'_blank');
+    assert.equal(actions.some(child=>child.textContent==='Continue: voices & video'),false);
+    assert.equal(h.requests.length,0);
+});
+
+test('Continue generates a waiting video from saved manual translations without provider credentials', async () => {
+    const h = harness(preferences);
+    h.run(`videoJobSummaries.set('ready',{id:'ready',status:'awaiting_translation',total_cues:734,
+        translated_cues:734,missing_cues:0,missing_cue_ids:[]});renderVideoJobs()`);
+    const calls = [];
+    h.context.fetch = async (url,options) => {
+        if (options?.method==='POST') {
+            calls.push({url,body:JSON.parse(options.body)});
+            return {ok:true,json:async()=>({job_id:'ready',status:'queued'})};
+        }
+        return {ok:true,json:async()=>({jobs:[],active_count:1,queued_count:1,max_concurrent_jobs:1})};
+    };
+    const actions = h.element('video-jobs-list').children[0].children[1].children;
+    await actions.find(child=>child.textContent==='Continue: voices & video').onclick();
+    assert.deepEqual(calls,[{url:'/api/video/job/ready/resume',body:{manual_translation:true}}]);
+    assert.equal(h.run('activeVideoJobId'),'ready');
+});
+
+test('video cards show saved Khmer counts and the missing cue numbers', () => {
+    const h = harness();
+    h.run(`videoJobSummaries.set('one',{id:'one',status:'awaiting_translation',total_cues:30,
+        translated_cues:18,missing_cues:12,missing_cue_ids:[4,8,9,11,12,13,14,15,16,17]});renderVideoJobs()`);
+    const info = h.element('video-jobs-list').children[0].children[0];
+    const panel = info.children.find(child => child.className === 'video-job-cues');
+    assert.equal(panel.children[0].textContent, 'Khmer text still needed');
+    assert.deepEqual(panel.children[1].children.map(stat => stat.children[0].textContent), ['30','18','12']);
+    assert.match(panel.children[2].textContent, /Missing text: \[4\], \[8\].*2 more/);
+    assert.equal(info.children[1].children[0].textContent, 'Waiting for Khmer text');
+});
+
+test('a fully translated waiting card says Ready for voices with zero missing cues', () => {
+    const h = harness();
+    h.run(`videoJobSummaries.set('ready',{id:'ready',status:'awaiting_translation',progress:70,
+        total_cues:734,translated_cues:734,missing_cues:0,missing_cue_ids:[]});renderVideoJobs()`);
+    const info = h.element('video-jobs-list').children[0].children[0];
+    assert.equal(info.children[1].children[0].textContent, 'Ready for voices');
+    const panel = info.children.find(child => child.className === 'video-job-cues');
+    assert.equal(panel.children[0].textContent, 'All Khmer text saved');
+    assert.deepEqual(panel.children[1].children.map(stat => stat.children[0].textContent), ['734','734','0']);
+    assert.equal(panel.children.length, 2);
+});
+
+test('an empty transcript does not claim that Khmer translations are ready', () => {
+    const h = harness();
+    h.run(`videoJobSummaries.set('empty',{id:'empty',status:'awaiting_translation',total_cues:0,
+        translated_cues:0,missing_cues:0,missing_cue_ids:[]});renderVideoJobs()`);
+    const info = h.element('video-jobs-list').children[0].children[0];
+    assert.equal(info.children[1].children[0].textContent, 'Waiting for Khmer text');
+    assert.equal(info.children.find(child => child.className === 'video-job-cues').children[0].textContent, 'No dialogue cues extracted yet');
+});
+
+test('a voice failure shows separate missing-text and missing-voice counts with a retry action', () => {
+    const h = harness();
+    h.run(`videoJobSummaries.set('one',{id:'one',status:'failed',total_cues:734,translated_cues:734,missing_cues:0,
+        voice_cues:734,ready_voices:709,missing_voices:25,missing_voice_ids:[48,78,127],missing_cue_ids:[]});renderVideoJobs()`);
+    const row = h.element('video-jobs-list').children[0];
+    const panel = row.children[0].children.find(child => child.className === 'video-job-cues');
+    assert.equal(panel.children[0].textContent, 'Khmer text saved · voices incomplete');
+    assert.equal(panel.children[1].children[2].children[1].textContent, 'Missing text');
+    assert.equal(panel.children[1].children[2].children[0].textContent, '0');
+    assert.equal(panel.children[2].children[0].textContent, 'Khmer voices: 709 / 734 saved');
+    assert.equal(panel.children[2].children[1].textContent, '25 voice clips still needed');
+    assert.match(panel.children[2].children[2].textContent, /Missing voices: \[48\], \[78\], \[127\] · 22 more/);
+    assert.ok(row.children[1].children.some(button => button.textContent === 'Retry 25 voices'));
+});
+
+test('the current server can display voice progress and voice errors without a restart', () => {
+    const h = harness();
+    h.context.job = {total_cues:734,error:'Video render failed: Khmer voice is missing for 3 cue(s): 127, 129, 355. Saved Khmer voices are kept.'};
+    assert.equal(h.run('videoJobVoiceSummary(job).ready_voices'), 731);
+    assert.equal(h.run('videoJobVoiceSummary(job).missing_voices'), 3);
+    h.context.job = {stage:'Generating Khmer voices (719/734 voices ready)'};
+    assert.equal(h.run('videoJobVoiceSummary(job).ready_voices'), 719);
+    assert.equal(h.run('videoJobVoiceSummary(job).missing_voices'), 15);
+});
+
+test('cards load saved cue totals from an older active server without restarting its workers', async () => {
+    const h = harness();
+    let detailRequests = 0;
+    h.context.fetch = async url => {
+        if (url === '/api/video/jobs') return {ok:true,json:async()=>({jobs:[
+            {id:'one',status:'awaiting_translation',progress:70,audio_mix:{original_volume:2,sound_effect:'none'}}
+        ],active_count:0,queued_count:0,max_concurrent_jobs:1})};
+        assert.equal(url, '/api/video/job/one/manual-translation?batch=0');
+        detailRequests++;
+        return {ok:true,json:async()=>({total_cues:734,remaining_cues:0,cues:[{id:1,text:'source',translation:'សួស្តី'}]})};
+    };
+    await h.run('refreshVideoJobs()');
+    assert.equal(h.run("videoJobSummaries.get('one').total_cues"), 734);
+    assert.equal(h.element('video-jobs-list').children[0].children[0].children[1].children[0].textContent, 'Ready for voices');
+    await h.run('refreshVideoJobs()');
+    assert.equal(detailRequests, 1, 'Repeated progress polls reuse the short-lived cue cache');
+});
+
+test('a failed card counts punctuation placeholders across all batches from one saved snapshot', async () => {
+    const h = harness();
+    const missingIds = [127,129,355];
+    const segments = Array.from({length:734}, (_, index) => ({id:index+1,text:'spoken dialogue',
+        translation:missingIds.includes(index+1) ? '...' : 'សួស្តី',
+        audio_file:missingIds.includes(index+1) ? null : `saved-${index+1}.mp3`}));
+    let savedRequests = 0;
+    h.context.fetch = async url => {
+        if (url === '/api/video/jobs') return {ok:true,json:async()=>({jobs:[{id:'one',status:'failed',audio_mix:{original_volume:2}}],
+            active_count:0,queued_count:0,max_concurrent_jobs:1})};
+        assert.equal(url, '/api/video/status/one');
+        savedRequests++;
+        return {ok:true,json:async()=>({segments})};
+    };
+    await h.run('refreshVideoJobs()');
+    assert.equal(h.run("videoJobSummaries.get('one').total_cues"),734);
+    assert.equal(h.run("videoJobSummaries.get('one').translated_cues"),731);
+    assert.equal(h.run("videoJobSummaries.get('one').missing_cues"),3);
+    assert.deepEqual(Array.from(h.run("videoJobSummaries.get('one').missing_cue_ids")),missingIds);
+    assert.equal(h.run("videoJobSummaries.get('one').ready_voices"),731);
+    const panel = h.element('video-jobs-list').children[0].children[0].children.find(child=>child.className==='video-job-cues');
+    assert.equal(panel.children[1].children[2].children[0].textContent,'3');
+    assert.match(panel.children[2].textContent,/Missing text: \[127\], \[129\], \[355\]/);
+    await h.run('refreshVideoJobs()');
+    assert.equal(savedRequests,1,'Full saved dialogue is fetched once per cache interval, not on each progress poll');
+});
+
+test('a legacy zero count is corrected when a manual batch contains placeholder text', async () => {
+    const h = harness();
+    const segments = [127,129,355].map(id=>({id,text:'source',translation:'...'}));
+    h.context.fetch = async url => {
+        if (url === '/api/video/jobs') return {ok:true,json:async()=>({jobs:[{id:'one',status:'awaiting_translation',audio_mix:{original_volume:2}}],
+            active_count:0,queued_count:0,max_concurrent_jobs:1})};
+        if (url.includes('/manual-translation')) return {ok:true,json:async()=>({total_cues:3,remaining_cues:0,cues:segments.slice(0,2)})};
+        assert.equal(url,'/api/video/status/one');
+        return {ok:true,json:async()=>({segments})};
+    };
+    await h.run('refreshVideoJobs()');
+    assert.equal(h.run("videoJobSummaries.get('one').missing_cues"),3);
+    assert.equal(h.run("videoJobSummaries.get('one').translated_cues"),0);
+    assert.equal(h.run("videoJobTranslationsReady(videoJobSummaries.get('one'))"),false);
+});
+
 test('dialogue polishing sends provider settings', async () => {
     const h = harness(preferences);
     h.run(`studioJobId = 'test';`);
@@ -225,6 +394,47 @@ test('URL and upload requests include logo, blur, and caption preferences', asyn
     }
 });
 
+test('corner blur presets, preview, and settings reach URL and upload jobs', async () => {
+    for (const mode of ['url', 'upload']) {
+        const h = harness();
+        h.run("setCornerBlurPreset('video', 'top-left')");
+        assert.equal(h.element('video-blur-corner').checked, true);
+        assert.equal(h.element('video-corner-blur-overlay').hidden, false);
+        assert.equal(h.element('video-corner-blur-overlay').style.width, '20%');
+        assert.equal(JSON.parse(h.storage.get('khmer_video_render_options')).corner_blur_x, .01);
+        if (mode === 'url') {
+            h.element('video-url-input').value = 'https://example.com/movie.mp4';
+            await h.run('handleUrlDubbing()');
+        } else {
+            h.element('video-file-input').files = [{name:'movie.mp4'}];
+            await h.run('handleFileDubbing()');
+        }
+        assert.equal(String(h.requests[0].body.blur_corner), 'true');
+        assert.equal(Number(h.requests[0].body.corner_blur_height), .08);
+        assert.equal(Number(h.requests[0].body.corner_blur_x), .01);
+    }
+});
+
+test('saved corner blur restores fractional coordinates and source preview', () => {
+    const h = harness();
+    h.run(`displayCompletedVideo({id:'saved', result:{download_url:'test.mp4'}, segments:[],
+        render_options:{blur_corner:true,corner_blur_x:.015,corner_blur_width:.23}})`);
+    assert.equal(h.element('studio-blur-corner').checked, true);
+    assert.equal(h.element('studio-corner-blur-x').value, 1.5);
+    assert.equal(h.element('studio-corner-blur-preset').value, 'custom');
+    assert.equal(h.element('studio-corner-preview-video').src, '/api/video/job/saved/source-video');
+    assert.equal(h.element('studio-corner-preview-video').hidden, false);
+    h.run("setCornerBlurPreset('studio', 'bottom-right')");
+    assert.equal(h.run("getVideoRenderOptions('studio').corner_blur_y"), .9);
+    h.element('studio-corner-blur-x').value = 95;
+    h.run("onVideoEffectsChange('studio')");
+    assert.equal(h.element('studio-corner-blur-error').hidden, false);
+    assert.equal(h.element('studio-corner-blur-overlay').hidden, true);
+    h.run("setCornerBlurPreviewSource('studio', null)");
+    assert.equal(h.element('studio-corner-preview-video').hidden, true);
+    assert.equal(h.element('studio-corner-preview-placeholder').hidden, false);
+});
+
 test('effects persist for future videos and saved jobs restore their settings', () => {
     const h = harness();
     h.element('video-add-logo').checked = true;
@@ -249,6 +459,175 @@ test('visual-only re-rendering reuses the completed audio track', async () => {
         return {ok:true,json:async()=>({status:'processing',job_id:'test'})};
     };
     await h.run('studioRerenderVideo()');
+});
+
+test('selecting 2% original audio remixes a saved video instead of reusing its muted audio', async () => {
+    const h = harness();
+    h.element('studio-bg-volume').value = '0.0';
+    h.run(`displayCompletedVideo({id:'test',result:{download_url:'test.mp4',dubbed_video_path:'test.mp4'},segments:[]})`);
+    h.element('studio-bg-volume').value = '0.02';
+    await h.run('studioRerenderVideo()');
+    assert.equal(h.requests[0].url, '/api/video/job/test/resume');
+    assert.equal(h.requests[0].body.bg_volume, 0.02);
+    assert.equal(h.requests[0].body.audio_mode, 'duck_subtle');
+});
+
+test('card volume buttons save only that job and preserve the selected studio', async () => {
+    const h = harness();
+    h.run(`activeVideoJobId='editing'; studioJobId='editing';
+        videoJobSummaries.set('one',{id:'one',status:'processing',audio_mix:{original_volume:2,sound_effect:'none'}});
+        videoJobSummaries.set('other',{id:'other',status:'processing',audio_mix:{original_volume:8,sound_effect:'none'}});
+        renderVideoJobs();`);
+    let saved;
+    h.context.fetch = async (url, options) => {
+        saved = {url, method:options.method, body:JSON.parse(options.body)};
+        return {ok:true,json:async()=>({id:'one',audio_mix:{original_volume:3,sound_effect:'none'},needs_audio_remix:false})};
+    };
+    const panel = h.element('video-jobs-list').children[0].children[0].children.find(child => child.className === 'video-job-audio-mix');
+    await panel.children[0].children[1].children[2].onclick();
+    assert.deepEqual(saved, {url:'/api/video/job/one/audio-mix',method:'PATCH',body:{original_volume:3,duck_original:false}});
+    assert.equal(h.run("videoJobSummaries.get('one').audio_mix.original_volume"), 3);
+    assert.equal(h.run("videoJobSummaries.get('other').audio_mix.original_volume"), 8);
+    assert.equal(h.run('activeVideoJobId'), 'editing');
+    assert.equal(h.run('studioJobId'), 'editing');
+});
+
+test('card volume limits and an active final render disable invalid changes', () => {
+    const h = harness();
+    for (const [volume, locked] of [[0,false],[100,false],[2,true]]) {
+        h.run(`videoJobSummaries.set('one',{id:'one',status:'processing',audio_mix_locked:${locked},
+            audio_mix:{original_volume:${volume},sound_effect:'none'}});renderVideoJobs()`);
+        const panel = h.element('video-jobs-list').children[0].children[0].children.find(child => child.className === 'video-job-audio-mix');
+        const buttons = panel.children[0].children[1].children;
+        assert.equal(Boolean(buttons[0].disabled), locked || volume === 0);
+        assert.equal(Boolean(buttons[2].disabled), locked || volume === 100);
+        assert.equal(Boolean(panel.children[1].children[1].disabled), locked);
+    }
+});
+
+test('a failed audio save retains the saved percentage and effect selection', async () => {
+    const h = harness();
+    h.run(`videoJobSummaries.set('one',{id:'one',audio_mix:{original_volume:2,sound_effect:'none'}})`);
+    h.context.fetch = async () => ({ok:false,json:async()=>({detail:'Final render in progress'})});
+    await h.run("setVideoJobAudioMix('one',{original_volume:3,sound_effect:'both'})");
+    assert.equal(h.run("videoJobSummaries.get('one').audio_mix.original_volume"), 2);
+    assert.equal(h.run("videoJobSummaries.get('one').audio_mix.sound_effect"), 'none');
+    assert.equal(h.run('changingVideoJobs.size'), 0);
+});
+
+test('audio mix changes invalidate older job-list responses', async () => {
+    const h = harness();
+    h.run(`videoJobSummaries.set('one',{id:'one',audio_mix:{original_volume:0,sound_effect:'none'}})`);
+    let stale;
+    h.context.fetch = async (url, options) => options?.method === 'PATCH'
+        ? {ok:true,json:async()=>({id:'one',audio_mix:{original_volume:2,sound_effect:'both'}})}
+        : await new Promise(resolve => {stale=resolve});
+    const refresh = h.run('refreshVideoJobs()');
+    await h.run("setVideoJobAudioMix('one',{original_volume:2,sound_effect:'both'})");
+    stale({ok:true,json:async()=>({jobs:[{id:'one',audio_mix:{original_volume:0,sound_effect:'none'}}]})});
+    await refresh;
+    assert.equal(h.run("videoJobSummaries.get('one').audio_mix.original_volume"), 2);
+    assert.equal(h.run("videoJobSummaries.get('one').audio_mix.sound_effect"), 'both');
+});
+
+test('opening a video restores its card volume in the studio', () => {
+    const h = harness();
+    h.run(`displayCompletedVideo({id:'one',segments:[],result:{download_url:'one.mp4'},
+        audio_mix:{original_volume:3,sound_effect:'ambience'}})`);
+    assert.equal(h.element('studio-bg-volume').value, '0.03');
+    assert.equal(h.run('studioBackgroundSnapshot'), '0.03');
+});
+
+test('a completed card with changed audio offers an explicit re-render', () => {
+    const h = harness();
+    h.run(`videoJobSummaries.set('one',{id:'one',status:'completed',needs_audio_remix:true,
+        audio_mix:{original_volume:2,sound_effect:'both'}});renderVideoJobs()`);
+    const actions = h.element('video-jobs-list').children[0].children[1].children;
+    assert.ok(actions.some(child => child.textContent === 'Re-render audio'));
+});
+
+test('saved original-speech fallbacks force a voice retry rather than copying old audio', async () => {
+    const h = harness();
+    h.run(`displayCompletedVideo({id:'test',status:'completed',result:{download_url:'test.mp4',dubbed_video_path:'test.mp4'},segments:[
+        {id:1,start:1,end:2,text:'source',translation:'មួយ',audio_source:'original_fallback',tts_error:'Voice service unavailable'}
+    ]})`);
+    await h.run('studioRerenderVideo()');
+    assert.equal(h.requests[0].url, '/api/video/job/test/resume');
+    assert.equal(h.requests[0].body.retranslate, undefined);
+});
+
+test('failed Khmer voices show a retry count and a dedicated recovery button', () => {
+    const h = harness();
+    h.run(`studioJobId = 'test'; studioSegments = [
+        {id:1,start:1,end:2,text:'one',translation:'មួយ',audio_source:'original_fallback'},
+        {id:2,start:2,end:3,text:'two',translation:'ពីរ',tts_error:'No audio received'},
+        {id:3,start:3,end:4,text:'three',translation:'បី',audio_source:'khmer_tts',audio_file:'saved.mp3'}
+    ]`);
+    h.render();
+    assert.equal(h.element('btn-retry-voices').textContent, 'Retry 2 Khmer voices');
+    assert.equal(h.element('btn-retry-voices').disabled, false);
+    assert.match(h.element('studio-cues-count').textContent, /2 voices need retry/);
+});
+
+test('unflagged missing voice clips enable retry and submit recovery after checking saved state', async () => {
+    const h = harness();
+    const cue = {id:1,start:1,end:2,text:'one',translation:'មួយ'};
+    h.context.job = {id:'test',status:'paused',segments:[cue]};
+    h.run(`studioJobId = 'test'; studioSegments = job.segments; studioDirty = false;`);
+    h.render();
+    assert.equal(h.element('btn-retry-voices').disabled, false);
+    assert.equal(h.element('btn-retry-voices').textContent, 'Retry 1 Khmer voice');
+    h.context.fetch = async (url, options = {}) => {
+        h.requests.push({url,method:options.method || 'GET'});
+        return {ok:true,json:async()=>options.method ? {job_id:'test',status:'queued'} : h.context.job};
+    };
+    await h.run('studioRetryFailedVoices()');
+    assert.deepEqual(h.requests.map(request => request.url), ['/api/video/status/test','/api/video/job/test/resume']);
+});
+
+test('voice retry on a running job shows progress without creating another task', async () => {
+    const h = harness();
+    const messages = [];
+    h.context.showToast = message => messages.push(message);
+    h.run(`studioJobId='test'; studioSegments=[{id:1,translation:'មួយ'}]; videoJobSummaries.set('test',{id:'test',status:'processing'}); updateVoiceRetryButton();`);
+    assert.equal(h.element('btn-retry-voices').textContent, 'View voice progress');
+    await h.run('studioRetryFailedVoices()');
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.run('activeVideoJobId'), 'test');
+    assert.match(messages[0], /already running/);
+});
+
+test('checking a job with saved voices gives feedback without re-rendering', async () => {
+    const h = harness();
+    const messages = [];
+    h.context.showToast = message => messages.push(message);
+    h.run(`studioJobId='test'; studioDirty=false; studioSegments=[{id:1,start:1,end:2,text:'one',translation:'មួយ'}];`);
+    h.context.fetch = async url => {
+        h.requests.push({url});
+        return {ok:true,json:async()=>({id:'test',status:'paused',segments:[{id:1,start:1,end:2,text:'one',translation:'មួយ',audio_file:'saved.mp3',audio_source:'khmer_tts'}]})};
+    };
+    await h.run('studioRetryFailedVoices()');
+    assert.equal(h.requests.length, 1);
+    assert.match(messages.at(-1), /No missing or failed voices/);
+    assert.equal(h.element('btn-retry-voices').disabled, false);
+    assert.equal(h.element('btn-retry-voices').textContent, 'Check Khmer voices');
+});
+
+test('duplicate voice retry clicks send only one saved-state check and one resume', async () => {
+    const h = harness();
+    let release;
+    h.run(`studioJobId='test'; studioSegments=[{id:1,start:1,end:2,translation:'មួយ'}];`);
+    h.context.fetch = async (url, options = {}) => {
+        h.requests.push({url});
+        if (!options.method) return new Promise(resolve => { release=()=>resolve({ok:true,json:async()=>({id:'test',status:'paused',segments:[{id:1,start:1,end:2,translation:'មួយ'}]})}); });
+        return {ok:true,json:async()=>({job_id:'test',status:'queued'})};
+    };
+    const first = h.run('studioRetryFailedVoices()');
+    await h.run('studioRetryFailedVoices()');
+    release();
+    await first;
+    assert.equal(h.requests.length, 2);
+    assert.equal(h.run('isCheckingVoices'), false);
 });
 
 test('a changed dialogue timestamp requires rebuilding the audio timeline', async () => {
@@ -487,7 +866,8 @@ test('refreshing all jobs preserves the active studio and shows independent prog
     assert.match(h.element('video-jobs-summary').textContent, /1 \/ 3 running.*1 queued/);
     const rows = h.element('video-jobs-list').children;
     assert.equal(rows[0].children[0].children[0].textContent, '<img src=x>');
-    assert.equal(rows[2].children[1].children[1].href, '/static/dubbed/ready.mp4');
+    const ready = rows.find(row => row.children[0].children[0].textContent === 'Ready');
+    assert.equal(ready.children[1].children.find(child => child.textContent === 'Video').href, '/static/dubbed/ready.mp4');
 });
 
 for (const action of ['studioPolishDialogue()', 'studioTranslateMissing()', 'studioAutoFixOverlaps()']) {
@@ -524,7 +904,7 @@ test('a render acknowledgement for another task does not switch the selected job
     assert.equal(h.run('activeVideoJobId'), 'second');
 });
 
-test('running tasks appear before queued and completed jobs with their own actions', async () => {
+test('video jobs sort by name regardless of status and retain their own actions', () => {
     const h = harness();
     h.run(`activeVideoJobId = 'b';
         videoJobSummaries.set('done',{id:'done',status:'completed',progress:100});
@@ -532,10 +912,42 @@ test('running tasks appear before queued and completed jobs with their own actio
         for (const id of ['a','b','c']) videoJobSummaries.set(id,{id,status:'processing',progress:30});
         renderVideoJobs();`);
     const rows = h.element('video-jobs-list').children;
-    assert.deepEqual(rows.map(row => row.children[0].children[0].textContent), ['a','b','c','waiting','done']);
+    assert.deepEqual(rows.map(row => row.children[0].children[0].textContent), ['a','b','c','done','waiting']);
     assert.equal(rows[1].children[1].children[0].textContent, 'Viewing');
-    assert.match(rows[0].children[0].children[1].textContent, /^Running/);
-    assert.match(rows[3].children[0].children[1].textContent, /^Queued/);
+    assert.equal(rows[0].children[0].children[1].children[0].textContent, 'Running');
+    assert.equal(rows[4].children[0].children[1].children[0].textContent, 'Queued');
+});
+
+test('video names sort naturally, ignore case, and stay in place as statuses change', () => {
+    const h = harness();
+    h.run(`
+        videoJobSummaries.set('ten', {id:'ten', title:'Episode 10.mp4', status:'processing'});
+        videoJobSummaries.set('two', {id:'two', title:'episode 2.mp4', status:'queued'});
+        videoJobSummaries.set('one', {id:'one', title:'Episode 1.mp4', status:'completed'});
+        videoJobSummaries.set('fallback', {id:'Alpha', title:'  ', status:'paused'});
+        renderVideoJobs();
+    `);
+    const titles = () => h.element('video-jobs-list').children.map(row => row.children[0].children[0].textContent);
+    assert.deepEqual(titles(), ['Alpha', 'Episode 1.mp4', 'episode 2.mp4', 'Episode 10.mp4']);
+    h.run(`videoJobSummaries.get('one').status = 'queued';
+        videoJobSummaries.get('two').status = 'processing';
+        videoJobSummaries.get('ten').status = 'completed';
+        renderVideoJobs();`);
+    assert.deepEqual(titles(), ['Alpha', 'Episode 1.mp4', 'episode 2.mp4', 'Episode 10.mp4']);
+});
+
+test('same-name videos have a consistent order when server response order changes', () => {
+    const h = harness();
+    h.run(`videoJobSummaries.set('job10', {id:'job10', title:'Episode.mp4'});
+        videoJobSummaries.set('job2', {id:'job2', title:'episode.mp4'});
+        renderVideoJobs();`);
+    const ids = () => h.element('video-jobs-list').children.map(row => row.children[0].children.find(child => child.className === 'video-job-meta').textContent);
+    assert.deepEqual(ids(), ['Job job2', 'Job job10']);
+    h.run(`const duplicateJobs = [...videoJobSummaries.entries()].reverse();
+        videoJobSummaries.clear();
+        for (const [id, job] of duplicateJobs) videoJobSummaries.set(id, job);
+        renderVideoJobs();`);
+    assert.deepEqual(ids(), ['Job job2', 'Job job10']);
 });
 
 test('removing the selected task clears its studio and ignores an outstanding progress response', async () => {

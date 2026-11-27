@@ -295,6 +295,40 @@ class SubmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["download_url"], "/static/dubbed/ready.mp4")
         self.assertNotIn("srt_url", job)
 
+    async def test_job_cards_report_saved_cues_and_translation_errors_without_dialogue(self):
+        pipeline.JOBS["cues"] = {"id": "cues", "status": "awaiting_translation", "segments": [
+            {"id": 1, "text": "private-source-one", "translation": "សួស្តី"},
+            {"id": 2, "text": "private-source-two", "translation": ""},
+            {"id": 3, "text": "private-source-three", "translation": "អរគុណ", "translation_error": "provider failed"},
+            {"id": 4, "text": "  ", "translation": ""},
+            {"id": 5, "text": "private-source-five", "translation": "  "},
+        ]}
+        pipeline.JOBS["empty"] = {"id": "empty", "status": "queued", "segments": []}
+        response = await self.client.get("/api/video/jobs")
+        jobs = {job["id"]: job for job in response.json()["jobs"]}
+        self.assertEqual(jobs["cues"]["total_cues"], 4)
+        self.assertEqual(jobs["cues"]["translated_cues"], 1)
+        self.assertEqual(jobs["cues"]["missing_cues"], 3)
+        self.assertEqual(jobs["cues"]["missing_cue_ids"], [2, 3, 5])
+        self.assertEqual(jobs["empty"]["total_cues"], 0)
+        self.assertEqual(jobs["empty"]["missing_cue_ids"], [])
+        self.assertNotIn("private-source", response.text)
+        self.assertNotIn("provider failed", response.text)
+        pipeline.JOBS["cues"]["segments"][1].update(translation="សួស្តី")
+        response = await self.client.get("/api/video/jobs")
+        updated = next(job for job in response.json()["jobs"] if job["id"] == "cues")
+        self.assertEqual(updated["translated_cues"], 2)
+        self.assertEqual(updated["missing_cue_ids"], [3, 5])
+
+    async def test_missing_cue_samples_stay_compact_for_long_videos(self):
+        pipeline.JOBS["long"] = {"id": "long", "status": "awaiting_translation", "segments": [
+            {"id": index, "text": "source", "translation": ""} for index in range(1, 501)
+        ]}
+        response = await self.client.get("/api/video/jobs")
+        job = response.json()["jobs"][0]
+        self.assertEqual(job["missing_cues"], 500)
+        self.assertEqual(job["missing_cue_ids"], list(range(1, 11)))
+
     async def test_invalid_rerender_request_preserves_completed_job_status(self):
         source = self.root / "source.mp4"
         source.touch()
@@ -307,6 +341,51 @@ class SubmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pipeline.JOBS["saved"]["status"], "completed")
         self.assertEqual(pipeline.JOBS["saved"]["progress"], 100)
         self.assertNotIn("saved", pipeline.RUNNING_JOBS)
+
+    async def test_stale_editor_snapshot_keeps_newer_generated_voice_metadata(self):
+        clip = self.root / "new-voice.mp3"
+        clip.write_bytes(b"saved Khmer voice")
+        current = {"id": 1, "start": 1, "end": 2, "translation": "សួស្តី", "audio_file": str(clip),
+                   "audio_source": "khmer_tts", "prosody": {"rate": "+10%"}}
+        job = {"segments": [current], "status": "paused"}
+        old_browser = {"id": 1, "start": 1, "end": 2, "translation": "សួស្តី", "voice_type": "male",
+                       "audio_file": None, "_dirty": True, "tts_error": "outdated failure"}
+        video_routes._apply_segment_updates(job, [old_browser])
+        updated = job["segments"][0]
+        self.assertEqual(updated["audio_file"], str(clip))
+        self.assertEqual(updated["audio_source"], "khmer_tts")
+        self.assertEqual(updated["prosody"], {"rate": "+10%"})
+        self.assertNotIn("_dirty", updated)
+        self.assertNotIn("tts_error", updated)
+        self.assertNotIn("needs_rerender", job)
+
+    async def test_stale_browser_cannot_reattach_a_cleared_voice_checkpoint(self):
+        current = {"id": 1, "start": 1, "end": 2, "translation": "សួស្តី", "_dirty": True}
+        job = {"segments": [current]}
+        video_routes._apply_segment_updates(job, [{**current, "audio_file": "old-but-present.mp3", "_dirty": False,
+                                                 "audio_source": "khmer_tts", "prosody": {"rate": "+10%"}}])
+        self.assertNotIn("audio_file", job["segments"][0])
+        self.assertNotIn("audio_source", job["segments"][0])
+        self.assertTrue(job["segments"][0]["_dirty"])
+
+    async def test_only_changed_text_or_voice_invalidates_its_cached_clip(self):
+        for change in ({"translation": "អរគុណ"}, {"voice_type": "female"}, {"rate": "+20%"}):
+            with self.subTest(change=change):
+                first = {"id": 1, "start": 1, "end": 2, "translation": "សួស្តី", "audio_file": "one.mp3", "audio_source": "khmer_tts"}
+                second = {"id": 2, "start": 3, "end": 4, "translation": "ពីរ", "audio_file": "two.mp3"}
+                job = {"segments": [first, second]}
+                video_routes._apply_segment_updates(job, [{**first, **change}, dict(second)])
+                self.assertIsNone(job["segments"][0]["audio_file"])
+                self.assertTrue(job["segments"][0]["_dirty"])
+                self.assertEqual(job["segments"][1]["audio_file"], "two.mp3")
+                self.assertNotIn("_dirty", job["segments"][1])
+
+    async def test_active_job_rejects_editor_writes_without_discarding_live_voices(self):
+        segments = [{"id": 1, "start": 1, "end": 2, "translation": "សួស្តី", "audio_file": "keep.mp3"}]
+        pipeline.JOBS["saved"] = {"id": "saved", "status": "processing", "segments": segments}
+        response = await self.client.put("/api/video/job/saved/segments", json={"segments": []})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(pipeline.JOBS["saved"]["segments"], segments)
 
     async def test_repeated_resume_requests_launch_one_worker(self):
         pipeline.JOBS["saved"] = {"id": "saved", "status": "interrupted", "progress": 74,

@@ -171,7 +171,7 @@ async def _run_batch(batch_id, api_key=None):
         if clip.get("removed") or not job or job_id in pipeline.DELETED_JOBS:
             clip["removed"] = True
             return
-        if job.get("status") in {"completed", "paused"} or job.get("pause_requested"):
+        if job.get("status") in {"completed", "paused", "awaiting_translation"} or job.get("pause_requested"):
             return
         try:
             async with pipeline.video_job_slot(job_id) as acquired:
@@ -230,6 +230,11 @@ async def _run_batch(batch_id, api_key=None):
 
 
 async def _finalize_batch(batch):
+    if any(not clip.get("removed") and pipeline.JOBS.get(clip["job_id"], {}).get("status") == "awaiting_translation"
+           for clip in batch["clips"]):
+        batch["status"] = "awaiting_translation"
+        _save_batch(batch)
+        return
     if any(not clip.get("removed") and pipeline.JOBS.get(clip["job_id"], {}).get("status") == "paused"
            for clip in batch["clips"]):
         batch["status"] = "paused"

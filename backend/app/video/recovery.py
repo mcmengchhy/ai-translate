@@ -5,7 +5,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-from .segments import missing_translations, valid_audio, require_renderable_segments
+from .segments import missing_translations, valid_audio, require_renderable_segments, MissingVoicesError
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,8 @@ async def prepare_dialogue_audio(
     model=None, base_url=None, tone="casual", voice_type="male", rate="auto", pitch="auto",
     volume="auto", on_progress=None, synthesize=None, translate=None, retry_rounds=2,
     translation_recovery_timeout=180,
+    allow_translation_recovery=True,
+    allow_original_fallback=True,
 ):
     """Keep successful work, repair failures while other voices run, then fill remaining audio.
 
@@ -48,6 +50,9 @@ async def prepare_dialogue_audio(
     output_dir.mkdir(parents=True, exist_ok=True)
     spoken = [seg for seg in segments if (seg.get("text") or seg.get("translation") or "").strip()]
     missing = missing_translations(spoken)
+    if missing and not allow_translation_recovery:
+        from .segments import MissingTranslationsError
+        raise MissingTranslationsError(missing)
     for seg in missing:
         if seg.get("audio_source") != "original_fallback":
             seg["audio_file"] = None
@@ -57,7 +62,7 @@ async def prepare_dialogue_audio(
 
     def progress(stage):
         if on_progress:
-            on_progress(stage, sum(valid_audio(seg) for seg in spoken), len(spoken))
+            on_progress(stage, sum(valid_audio(seg) and seg.get("audio_source") != "original_fallback" for seg in spoken), len(spoken))
 
     async def repair(seg):
         previous = seg.get("translation")
@@ -89,19 +94,22 @@ async def prepare_dialogue_audio(
                          "volume": seg.get("volume") or volume}
             changed = any(value != "auto" and value != seg.get("prosody", {}).get(knob)
                           for knob, value in requested.items())
-            if not valid_audio(seg) or seg.get("_dirty") or changed:
+            if not valid_audio(seg) or seg.get("audio_source") == "original_fallback" or seg.get("tts_error") or seg.get("_dirty") or changed:
                 seg["audio_file"] = None
                 pending.append(seg)
+        recovering = any(seg.get("tts_error") or seg.get("voice_retry_round") for seg in pending)
         for attempt in range(retry_rounds):
             if not pending:
                 return
-            progress(f"{'Generating' if attempt == 0 else 'Retrying'} {len(pending)} voice clips")
+            serial = recovering or attempt > 0
+            progress(f"{'Retrying' if serial else 'Generating'} {len(pending)} voice clips" +
+                     (" one at a time" if serial else ""))
             for seg in pending:
                 seg["voice_retry_round"] = attempt+1
             try:
                 await synthesize(
                     pending, output_dir, voice_type=voice_type, rate=rate, pitch=pitch, volume=volume,
-                    max_concurrency=4, enhance=True,
+                    max_concurrency=1 if serial else 4, enhance=True,
                     on_progress=lambda done, total: progress("Generating Khmer voices"),
                 )
             except Exception as error:
@@ -116,7 +124,8 @@ async def prepare_dialogue_audio(
             pending = [seg for seg in pending if not valid_audio(seg)]
             progress(f"Voice pass {attempt+1} saved")
             if pending and attempt + 1 < retry_rounds:
-                await asyncio.sleep(2 * (attempt+1))
+                progress("Voice service returned no audio — cooling down before retry")
+                await asyncio.sleep(15 * (attempt+1))
 
     # Successful cues keep advancing while failed cues retry independently.
     async def repair_queue():
@@ -130,6 +139,14 @@ async def prepare_dialogue_audio(
     await asyncio.gather(voices(healthy), repair_queue())
     repaired = [seg for seg in missing if not missing_translations([seg])]
     await voices(repaired)
+
+    if not allow_original_fallback:
+        unresolved = [seg for seg in spoken if not valid_audio(seg) or seg.get("audio_source") == "original_fallback"]
+        if unresolved:
+            for seg in unresolved:
+                seg.update(review_required=True, _dirty=True,
+                           generation_warning="Khmer voice pending. Retry failed Khmer voices; original speech will not be substituted.")
+            raise MissingVoicesError(unresolved)
 
     fallback_slots = asyncio.Semaphore(2)
     async def original_fallback(seg):

@@ -13,7 +13,7 @@
     
     <!-- Phosphor Icons (Lightweight SVG Icons) -->
     <script src="https://unpkg.com/@phosphor-icons/web"></script>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20261117-checkpoints-3">
+    <link rel="stylesheet" href="/static/css/styles.css?v=20261125-corner-blur-1">
 </head>
 <body>
     <div class="app-background">
@@ -38,6 +38,7 @@
         <div class="nav-actions">
             <!-- Mode Tabs -->
             <div class="mode-tabs">
+                <a class="tab-btn" href="/static/clip-editor.html">Quick clip editor</a>
                 <button class="tab-btn active" id="tab-video-btn" onclick="switchMainTab('video')">
                     <i class="ph ph-video-camera"></i> Video Dubber
                 </button>
@@ -81,7 +82,7 @@
                     <div class="hero-text-block">
                         <div class="hero-badge"><i class="ph ph-sparkle"></i> YouTube, Bilibili & Web Video to Khmer Voice</div>
                         <h2>Auto-Translate & Dub Any Video into Khmer (បញ្ចូលសំឡេងខ្មែរ)</h2>
-                        <p>Upload a video or paste a <strong>YouTube</strong>, <strong>Bilibili</strong>, or <strong>TikTok</strong> link. The tool combines speech and subtitles, translates them into English, then translates the English into Khmer for subtitles and voiceover.</p>
+                        <p>Upload a video or paste a <strong>YouTube</strong>, <strong>Bilibili</strong>, or <strong>TikTok</strong> link. Extract the original dialogue, translate it into Khmer, then generate subtitles and voiceover. Manual translation lets you use Google Translate yourself.</p>
                     </div>
 
                     <!-- Voice & Audio Configuration Bar -->
@@ -137,6 +138,15 @@
                             </select>
                         </div>
 
+                        <div class="config-col">
+                            <label for="video-translation-mode">Translation workflow</label>
+                            <select id="video-translation-mode" class="styled-select" onchange="localStorage.setItem('khmer_video_translation_mode', this.value)">
+                                <option value="manual" selected>Manual — copy text to Google Translate</option>
+                                <option value="automatic">Automatic — use the selected engine</option>
+                            </select>
+                            <small>Manual stops after dialogue extraction and waits for your Khmer text.</small>
+                        </div>
+
                         <div class="config-col checkbox-col">
                             <label class="checkbox-label" title="Permanently render Khmer subtitles onto the video frames">
                                 <input type="checkbox" id="burn-subs-checkbox" onchange="onVideoEffectsChange('video')">
@@ -146,7 +156,7 @@
                     </div>
 
 <details class="video-effects-panel" id="video-effects-panel">
-                        <summary><i class="ph ph-image"></i> Logo, subtitle blur &amp; Khmer captions</summary>
+                        <summary><i class="ph ph-image"></i> Logo, corner blur, subtitle blur &amp; Khmer captions</summary>
                         <div class="video-effects-grid">
                             <div class="video-effect-group">
                                 <label class="checkbox-label"><input type="checkbox" id="video-add-logo" onchange="onVideoEffectsChange('video')"> Add our logo · 40×40 px, top right</label>
@@ -160,6 +170,30 @@
                                 <label class="video-logo-upload">Upload your logo (PNG, JPEG, WebP)
                                     <input type="file" id="video-logo-file" accept="image/png,image/jpeg,image/webp" onchange="uploadVideoLogo('video', this.files[0])">
                                 </label>
+                            </div>
+                            <div class="video-effect-group">
+                                <label class="checkbox-label"><input type="checkbox" id="video-blur-corner" onchange="onVideoEffectsChange('video')"> Blur corner text / Bilibili banner</label>
+                                <label for="video-corner-blur-preset">Corner area</label>
+                                <select id="video-corner-blur-preset" class="styled-select" onchange="setCornerBlurPreset('video', this.value)">
+                                    <option value="top-left">Top left · Bilibili</option>
+                                    <option value="top-right">Top right</option>
+                                    <option value="bottom-left">Bottom left</option>
+                                    <option value="bottom-right">Bottom right</option>
+                                    <option value="custom">Custom area</option>
+                                </select>
+                                <div class="blur-region-controls">
+                                    <label>Left %<input type="number" id="video-corner-blur-x" min="0" max="99" step="0.1" value="1" oninput="onVideoEffectsChange('video')"></label>
+                                    <label>Top %<input type="number" id="video-corner-blur-y" min="0" max="99" step="0.1" value="2" oninput="onVideoEffectsChange('video')"></label>
+                                    <label>Width %<input type="number" id="video-corner-blur-width" min="1" max="100" step="0.1" value="20" oninput="onVideoEffectsChange('video')"></label>
+                                    <label>Height %<input type="number" id="video-corner-blur-height" min="1" max="100" step="0.1" value="8" oninput="onVideoEffectsChange('video')"></label>
+                                </div>
+                                <small id="video-corner-blur-error" class="blur-region-error" role="alert" hidden>The blur area must fit inside the frame. Left + width and top + height must be at most 100%.</small>
+                                <div class="corner-blur-preview" id="video-corner-preview-frame" aria-label="Corner blur placement preview">
+                                    <span id="video-corner-preview-placeholder">Select a video to preview placement</span>
+                                    <video id="video-corner-preview-video" controls muted playsinline preload="metadata" hidden onloadedmetadata="updateCornerBlurPreviewAspect('video', this)" onerror="setCornerBlurPreviewSource('video', null)"></video>
+                                    <div id="video-corner-blur-overlay" class="corner-blur-overlay" hidden></div>
+                                </div>
+                                <small>The outlined area is blurred throughout the video. Preview shows placement; export applies the blur. For multiple uploads, preview shows the first video and the same percentages apply to all.</small>
                             </div>
                             <div class="video-effect-group">
                                 <label class="checkbox-label"><input type="checkbox" id="video-blur-subtitles" onchange="onVideoEffectsChange('video')"> Blur original Chinese subtitle area</label>
@@ -332,11 +366,21 @@
 
                 <div class="input-card video-jobs-card" id="video-jobs-card">
                     <div class="video-jobs-header">
-                        <h3>Video Jobs</h3>
+                        <div class="video-jobs-heading">
+                            <div class="video-jobs-icon" aria-hidden="true"><i class="ph ph-film-strip"></i></div>
+                            <div>
+                                <h3>Video Jobs</h3>
+                                <p>Track every video, from upload to final download.</p>
+                            </div>
+                        </div>
                         <span id="video-jobs-summary" role="status">Loading jobs...</span>
                         <button type="button" class="btn-ghost btn-sm video-task-remove" id="clear-video-tasks-btn" onclick="clearVideoTasksAndCache()" disabled>Clear tasks &amp; cache</button>
                     </div>
-                    <p>Each task has separate progress, dialogue, and downloads. Open any task to view it while the others continue.</p>
+                    <div class="video-jobs-toolbar">
+                        <span>Progress &amp; saved results</span>
+                        <a class="btn-secondary btn-sm" href="/static/reuse.html">Batch Khmer export &amp; replacement video</a>
+                        <span class="video-jobs-sort"><i class="ph ph-sort-ascending" aria-hidden="true"></i> Name · A–Z</span>
+                    </div>
                     <div id="video-jobs-list"></div>
                 </div>
 
@@ -365,6 +409,7 @@
                     </div>
                     <button type="button" class="btn-secondary btn-sm" id="pipeline-resume-btn" style="display: none;" onclick="resumeTrackedJob()">Resume saved work</button>
                     <button type="button" class="btn-secondary btn-sm" id="pipeline-pause-btn" style="display: none;" onclick="changeVideoCheckpoint(activeVideoJobId, 'pause')">Pause</button>
+                    <a class="btn-secondary btn-sm" id="pipeline-details-link" href="#" target="_blank" rel="noopener">Processing details / copy original text</a>
 
                     <div class="pipeline-bar-wrap">
                         <div class="pipeline-bar-fill" id="pipeline-progress-fill" style="width: 10%;"></div>
@@ -414,6 +459,7 @@
                                 <select id="studio-bg-volume" class="styled-select select-xs" onchange="markStudioDirty()">
                                     <option value="0.0" selected>🔇 Mute Original Video (100% Clean Studio Voice - Identical to Preview)</option>
                                     <option value="-1">🎚️ Smart Auto-Ducking (Mutes original voice during speech, keeps music & SFX)</option>
+                                    <option value="0.02">🔉 Original Audio 2% (Khmer voice at full volume)</option>
                                     <option value="0.05">🔉 Subtle Ambience (5% Faint Music)</option>
                                     <option value="0.15">🔊 Standard Ducking (15% Original Audio)</option>
                                     <option value="0.30">📢 High Original (30%)</option>
@@ -430,6 +476,7 @@
                                 <i class="ph ph-lightning" style="color: var(--accent-amber);"></i> Auto-Fix Overlaps
                             </button>
 
+                            <button type="button" class="btn-secondary btn-sm" id="btn-retry-voices" onclick="studioRetryFailedVoices()" title="Open a saved job to check and retry missing Khmer voices" disabled>Check Khmer voices</button>
                             <!-- AI Polish Dialogue Logic -->
                             <button type="button" class="btn-secondary btn-sm" id="btn-translate-missing" onclick="studioTranslateMissing()" title="Translate only missing Khmer dialogue and keep your existing edits">
                                 <i class="ph ph-translate"></i> Translate Missing
@@ -457,7 +504,7 @@
                     </div>
 
 <details class="video-effects-panel" id="studio-effects-panel">
-                        <summary><i class="ph ph-image"></i> Logo, subtitle blur &amp; Khmer captions</summary>
+                        <summary><i class="ph ph-image"></i> Logo, corner blur, subtitle blur &amp; Khmer captions</summary>
                         <div class="video-effects-grid">
                             <div class="video-effect-group">
                                 <label class="checkbox-label"><input type="checkbox" id="studio-add-logo" onchange="onVideoEffectsChange('studio')"> Add our logo · 40×40 px, top right</label>
@@ -471,6 +518,30 @@
                                 <label class="video-logo-upload">Upload your logo (PNG, JPEG, WebP)
                                     <input type="file" id="studio-logo-file" accept="image/png,image/jpeg,image/webp" onchange="uploadVideoLogo('studio', this.files[0])">
                                 </label>
+                            </div>
+                            <div class="video-effect-group">
+                                <label class="checkbox-label"><input type="checkbox" id="studio-blur-corner" onchange="onVideoEffectsChange('studio')"> Blur corner text / Bilibili banner</label>
+                                <label for="studio-corner-blur-preset">Corner area</label>
+                                <select id="studio-corner-blur-preset" class="styled-select" onchange="setCornerBlurPreset('studio', this.value)">
+                                    <option value="top-left">Top left · Bilibili</option>
+                                    <option value="top-right">Top right</option>
+                                    <option value="bottom-left">Bottom left</option>
+                                    <option value="bottom-right">Bottom right</option>
+                                    <option value="custom">Custom area</option>
+                                </select>
+                                <div class="blur-region-controls">
+                                    <label>Left %<input type="number" id="studio-corner-blur-x" min="0" max="99" step="0.1" value="1" oninput="onVideoEffectsChange('studio')"></label>
+                                    <label>Top %<input type="number" id="studio-corner-blur-y" min="0" max="99" step="0.1" value="2" oninput="onVideoEffectsChange('studio')"></label>
+                                    <label>Width %<input type="number" id="studio-corner-blur-width" min="1" max="100" step="0.1" value="20" oninput="onVideoEffectsChange('studio')"></label>
+                                    <label>Height %<input type="number" id="studio-corner-blur-height" min="1" max="100" step="0.1" value="8" oninput="onVideoEffectsChange('studio')"></label>
+                                </div>
+                                <small id="studio-corner-blur-error" class="blur-region-error" role="alert" hidden>The blur area must fit inside the frame. Left + width and top + height must be at most 100%.</small>
+                                <div class="corner-blur-preview" id="studio-corner-preview-frame" aria-label="Corner blur placement preview">
+                                    <span id="studio-corner-preview-placeholder">Source preview unavailable</span>
+                                    <video id="studio-corner-preview-video" controls muted playsinline preload="metadata" hidden onloadedmetadata="updateCornerBlurPreviewAspect('studio', this)" onerror="setCornerBlurPreviewSource('studio', null)"></video>
+                                    <div id="studio-corner-blur-overlay" class="corner-blur-overlay" hidden></div>
+                                </div>
+                                <small>Preview shows the original source and blur placement. Re-Render Video applies the blur to a new export while preserving finished audio when possible.</small>
                             </div>
                             <div class="video-effect-group">
                                 <label class="checkbox-label"><input type="checkbox" id="studio-blur-subtitles" onchange="onVideoEffectsChange('studio')"> Blur original Chinese subtitle area</label>
@@ -1043,7 +1114,7 @@
 
     <script src="/static/js/tools.js"></script>
     <script src="/static/js/srt_parser.js"></script>
-    <script src="/static/js/video_dubber.js?v=20261117-checkpoints-3"></script>
+    <script src="/static/js/video_dubber.js?v=20261126-reuse-1"></script>
     <script src="/static/js/video_splitter.js"></script>
     <script src="/static/js/app.js"></script>
 </body>

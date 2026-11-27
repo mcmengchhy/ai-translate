@@ -204,6 +204,7 @@ async def _run_video_dubbing_pipeline(
     voice_volume: str = "auto",
     render_options: Optional[dict] = None,
     include_english_reference: bool = True,
+    manual_translation: bool = False,
 ):
     job = JOBS.get(job_id)
     if not job:
@@ -311,6 +312,16 @@ async def _run_video_dubbing_pipeline(
         job.setdefault("pipeline_phase", "transcribed")
         _save_job(job_id)
 
+        # Manual jobs release the worker here; no translation provider or TTS is called.
+        manual_translation = bool(manual_translation or job.get("manual_translation") or job.get("request_options", {}).get("manual_translation"))
+        if manual_translation:
+            from .manual_translation import wait_for_manual_translation
+            wait_for_manual_translation(job)
+            _save_job(job_id)
+            if missing_translations(segments):
+                return
+            job["status"] = "processing"
+
         # Step 3: Translate original dialogue directly; English is a review reference.
         mark_step(job, "translation", "partial")
         job["stage"] = "Original dialogue → Khmer"
@@ -325,17 +336,19 @@ async def _run_video_dubbing_pipeline(
                            f"Original dialogue → Khmer ({done_chunks}/{total_chunks} scenes)")
 
         try:
-            await translate_dialogue_segments(
-                segments, job["detected_language"], engine_name=engine_name,
-                api_key=api_key, model=model, base_url=base_url, tone=tone,
-                on_progress=_on_trans_progress,
-                include_english=include_english_reference,
-            )
+            if not manual_translation:
+                await translate_dialogue_segments(
+                    segments, job["detected_language"], engine_name=engine_name,
+                    api_key=api_key, model=model, base_url=base_url, tone=tone,
+                    on_progress=_on_trans_progress,
+                    include_english=include_english_reference,
+                )
         except MissingTranslationsError as error:
             logger.warning("Keeping completed translations and recovering only failed cues: %s", error)
-        batch_polish_segments(segments)
+        if not manual_translation:
+            batch_polish_segments(segments)
 
-        if job.get("pipeline_phase") not in {"translated", "voices_ready", "rendering", "completed"}:
+        if not manual_translation and job.get("pipeline_phase") not in {"translated", "voices_ready", "rendering", "completed"}:
             # Deduplicate any adjacent cues that have identical translations or source text
             deduped = []
             for s in segments:
@@ -383,6 +396,8 @@ async def _run_video_dubbing_pipeline(
             engine_name=engine_name, api_key=api_key, model=model, base_url=base_url, tone=tone,
             voice_type=voice_type, rate=voice_rate, pitch=voice_pitch, volume=voice_volume,
             on_progress=audio_progress, synthesize=synthesize_segments,
+            allow_translation_recovery=not manual_translation,
+            allow_original_fallback=False,
         )
         job.update(recovery)
         if not missing_translations(segments):
@@ -393,6 +408,8 @@ async def _run_video_dubbing_pipeline(
         checkpoint_job(job_id, 85, "Mixing audio and assembling video", force=True)
 
         # Step 5: Audio Mixing & Video Dubbing
+        if job.get("needs_audio_remix"):
+            job["output_filename"] = f"dubbed_{job_id}_mix_{uuid.uuid4().hex[:8]}.mp4"
         job["stage"] = "Mixing audio and assembling video"
         logger.info("Assembling final dubbed video...")
         dub_result = await assemble_dubbed_video(
@@ -402,6 +419,7 @@ async def _run_video_dubbing_pipeline(
             audio_mode=audio_mode,
             burn_subtitles=burn_subtitles,
             render_options=effects.render_values(),
+            **({"audio_mix": dict(job["audio_mix"])} if job.get("audio_mix") else {}),
         )
 
         job["progress"] = 100
@@ -411,6 +429,7 @@ async def _run_video_dubbing_pipeline(
         job["stage"] = "Complete" if not recovery["fallback_count"] else f"Complete — {recovery['fallback_count']} cues need review"
         dub_result.update(recovery)
         job["result"] = dub_result
+        job["needs_audio_remix"] = False
         mark_step(job, "render", "complete")
         _save_job(job_id)
         logger.info(f"Job {job_id} successfully completed!")

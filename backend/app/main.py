@@ -11,10 +11,12 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from .api.routes import router as api_router
 from .api.video_routes import router as video_router
+from .api.media_export_routes import router as media_export_router
 from .core import config
 from .video.pipeline import cleanup_saved_job_caches, mark_interrupted_jobs
 from .video.batch import restore_batches, stop_batches
 from .video import pipeline
+from .video import media_exports
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,11 +28,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 @asynccontextmanager
 async def lifespan(app):
     await asyncio.to_thread(mark_interrupted_jobs)
+    await asyncio.to_thread(media_exports.mark_interrupted_exports)
     await asyncio.to_thread(cleanup_saved_job_caches)
     await restore_batches()
     try:
         yield
     finally:
+        await media_exports.stop_exports()
         await stop_batches()
 
 
@@ -65,6 +69,7 @@ app.add_middleware(
 # Include API Routers
 app.include_router(api_router)
 app.include_router(video_router)
+app.include_router(media_export_router)
 
 # Mount frontend static directory & media directories
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent

@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional
 from .segments import require_translations, require_renderable_segments
 from .render_options import VideoRenderOptions, resolve_logo
 from .subtitles import readable_cues, render_caption_track
+from .audio_mix import AudioMixSettings, audio_mix_filter
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +323,7 @@ def _assemble_dubbed_video(
     burn_subtitles: bool = False,
     render_options: Optional[dict] = None,
     prepared_audio_path: Optional[str] = None,
+    audio_mix: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """
     Synchronizes synthesized Khmer audio clips onto the video timeline and
@@ -368,7 +370,14 @@ def _assemble_dubbed_video(
     # 1. Default to 100% Pure Studio Voiceover ([1:a]volume=1.0[aout]) for crystal-clear sound bit-exact identical to preview.
     # 2. amix uses 'normalize=0:dropout_transition=0' so Khmer voice volume is never halved (-6dB).
     # 3. For ducking/sidechain: pre-attenuates original foreign audio so speech bleed and background hiss never clash.
-    if bg_volume is not None:
+    if audio_mix is not None and not prepared_audio_path:
+        audio_mix = AudioMixSettings(**audio_mix).model_dump()
+        has_original = bool(json.loads(subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=index",
+            "-of", "json", str(video),
+        ])).get("streams"))
+        audio_filter = audio_mix_filter(audio_mix, video_duration, has_original)
+    elif bg_volume is not None:
         if bg_volume < 0:
             # Smart Cinema Ducking with pre-attenuated background
             audio_filter = (
@@ -414,17 +423,22 @@ def _assemble_dubbed_video(
     video_filters = []
     video_label = "0:v:0"
     input_index = 2
+    blur_regions = []
     if options.blur_chinese_subtitles:
-        x = f"2*floor(iw*{options.blur_x:.6f}/2)"
-        y = f"2*floor(ih*{options.blur_y:.6f}/2)"
-        width = f"max(2,2*floor(iw*{options.blur_width:.6f}/2))"
-        height = f"max(2,2*floor(ih*{options.blur_height:.6f}/2))"
+        blur_regions.append(("subtitles", options.blur_x, options.blur_y, options.blur_width, options.blur_height))
+    if options.blur_corner:
+        blur_regions.append(("corner", options.corner_blur_x, options.corner_blur_y, options.corner_blur_width, options.corner_blur_height))
+    for name, left, top, region_width, region_height in blur_regions:
+        x = f"2*floor(iw*{left:.6f}/2)"
+        y = f"2*floor(ih*{top:.6f}/2)"
+        width = f"max(2,2*floor(iw*{region_width:.6f}/2))"
+        height = f"max(2,2*floor(ih*{region_height:.6f}/2))"
         video_filters.extend([
-            f"[{video_label}]split=2[clean][strip]",
-            f"[strip]crop=w='{width}':h='{height}':x='{x}':y='{y}',gblur=sigma=18[blur]",
-            f"[clean][blur]overlay=x='2*floor(main_w*{options.blur_x:.6f}/2)':y='2*floor(main_h*{options.blur_y:.6f}/2)'[blurred]",
+            f"[{video_label}]split=2[clean_{name}][strip_{name}]",
+            f"[strip_{name}]crop=w='{width}':h='{height}':x='{x}':y='{y}',gblur=sigma=18[blur_{name}]",
+            f"[clean_{name}][blur_{name}]overlay=x='2*floor(main_w*{left:.6f}/2)':y='2*floor(main_h*{top:.6f}/2)'[blurred_{name}]",
         ])
-        video_label = "blurred"
+        video_label = f"blurred_{name}"
     if options.burn_subtitles and segments:
         dimensions = json.loads(subprocess.check_output([
             "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", str(video)
@@ -464,6 +478,7 @@ def _assemble_dubbed_video(
         "duration": video_duration,
         "segments_count": len(segments),
         "render_options": options.render_values(),
+        **({"audio_mix": audio_mix} if audio_mix is not None else {}),
     }
 
 
@@ -476,6 +491,7 @@ async def assemble_dubbed_video(
     burn_subtitles: bool = False,
     render_options: Optional[dict] = None,
     prepared_audio_path: Optional[str] = None,
+    audio_mix: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Render in a worker so status polling stays responsive during FFmpeg work."""
     if prepared_audio_path:
@@ -494,5 +510,5 @@ async def assemble_dubbed_video(
         async with resource_slot("video_render", 1):
             return await run_blocking(
                 _assemble_dubbed_video, video_path, segments, output_filename,
-                audio_mode, bg_volume, burn_subtitles, render_options, prepared_audio_path,
+                audio_mode, bg_volume, burn_subtitles, render_options, prepared_audio_path, audio_mix,
             )

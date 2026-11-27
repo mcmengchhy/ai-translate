@@ -9,12 +9,271 @@ let duplicateVideoSubmission = null;
 const savedPipelineProgress = new Map();
 let selectedVideoFiles = null;
 let selectedVideoSubtitles = null;
+let cornerPreviewObjectUrl = null;
 let videoJobsRefreshing = false;
 const videoJobSummaries = new Map();
 const removingVideoJobs = new Set();
 let videoJobsGeneration = 0;
 const changingVideoJobs = new Set();
 const expandedVideoJobSteps = new Set();
+const videoJobNameCollator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+const videoJobCueSummaryCache = new Map();
+
+function videoJobName(job) {
+    return job.title?.trim() || job.id;
+}
+
+function videoJobTranslationsReady(job) {
+    return job.total_cues > 0 && job.missing_cues === 0;
+}
+
+function videoJobVoiceSummary(job) {
+    if (Number.isFinite(job.voice_cues) && Number.isFinite(job.missing_voices)) return job;
+    // Older workers already report these exact counts in their progress/error
+    // messages. Use them until the compact API fields become available.
+    const failure = (job.error || '').match(/Khmer voice is missing for (\d+) cue\(s\): ([\d, ]+)\./);
+    if (failure && Number.isFinite(job.total_cues)) {
+        const missing = Number(failure[1]);
+        return {voice_cues:job.total_cues,ready_voices:Math.max(0,job.total_cues-missing),missing_voices:missing,
+            missing_voice_ids:failure[2].split(',').map(id=>Number(id.trim()))};
+    }
+    const progress = (job.stage || '').match(/\((\d+)\/(\d+) voices ready\)/);
+    if (progress) return {voice_cues:Number(progress[2]),ready_voices:Number(progress[1]),
+        missing_voices:Math.max(0,Number(progress[2])-Number(progress[1])),missing_voice_ids:[]};
+    return null;
+}
+
+function videoJobDialogueSummary(segments) {
+    const spoken = (segments || []).filter(cue => cue && typeof cue === 'object' &&
+        (cue.text || cue.translation || '').trim());
+    const cues = spoken.filter(cue => (cue.text || '').trim());
+    const missingText = cues.filter(cue => !/[\p{L}\p{N}]/u.test(cue.translation || '') || cue.translation_error);
+    const missingVoices = spoken.filter(cue => !cue.audio_file || cue.audio_source === 'original_fallback' || cue.tts_error || cue._dirty);
+    return { total_cues:cues.length, translated_cues:cues.length-missingText.length,
+        missing_cues:missingText.length, missing_cue_ids:missingText.slice(0,10).map(cue=>cue.id),
+        voice_cues:spoken.length, ready_voices:spoken.length-missingVoices.length,
+        missing_voices:missingVoices.length, missing_voice_ids:missingVoices.slice(0,10).map(cue=>cue.id) };
+}
+
+async function loadVideoJobCueSummary(job) {
+    // Older running servers can provide totals through the existing manual
+    // workspace endpoint, so workers need not restart to show the new cards.
+    if (Number.isFinite(job.total_cues) || !job.audio_mix) return;
+    const cached = videoJobCueSummaryCache.get(job.id);
+    if (cached && cached.status === job.status && Date.now() - cached.updated < 15000) {
+        Object.assign(job, cached.summary);
+        return;
+    }
+    // Failed jobs need one consistent snapshot of their saved text and voice
+    // metadata. Legacy aggregate counts can accept punctuation as translation.
+    if (job.status === 'failed') {
+        const response = await fetch(`/api/video/status/${encodeURIComponent(job.id)}`);
+        if (!response.ok) return;
+        const saved = await response.json();
+        if (!Array.isArray(saved.segments)) return;
+        const summary = videoJobDialogueSummary(saved.segments);
+        videoJobCueSummaryCache.set(job.id, { summary, status:job.status, updated:Date.now() });
+        Object.assign(job, summary);
+        return;
+    }
+    const response = await fetch(`/api/video/job/${encodeURIComponent(job.id)}/manual-translation?batch=0`);
+    if (!response.ok) return;
+    const details = await response.json();
+    if (!Number.isInteger(details.total_cues) || !Number.isInteger(details.remaining_cues)) return;
+    const invalid = (details.cues || []).filter(cue => (cue.text || '').trim() && !/[\p{L}\p{N}]/u.test(cue.translation || ''));
+    // A placeholder visible in this batch means other batches may contain
+    // placeholders too; do not combine a partial list with an old zero count.
+    if (invalid.some(cue => (cue.translation || '').trim())) {
+        const savedResponse = await fetch(`/api/video/status/${encodeURIComponent(job.id)}`);
+        if (!savedResponse.ok) return;
+        const saved = await savedResponse.json();
+        if (!Array.isArray(saved.segments)) return;
+        const summary = videoJobDialogueSummary(saved.segments);
+        videoJobCueSummaryCache.set(job.id, { summary, status:job.status, updated:Date.now() });
+        Object.assign(job, summary);
+        return;
+    }
+    const summary = {total_cues:details.total_cues,translated_cues:details.total_cues-details.remaining_cues,
+        missing_cues:details.remaining_cues,missing_cue_ids:invalid.slice(0,10).map(cue=>cue.id)};
+    videoJobCueSummaryCache.set(job.id, { summary, status: job.status, updated: Date.now() });
+    Object.assign(job, summary);
+}
+
+function renderVideoJobCues(job) {
+    if (!Number.isFinite(job.total_cues)) return null;
+    const panel = document.createElement('div');
+    panel.className = 'video-job-cues';
+    const ready = videoJobTranslationsReady(job);
+    const voices = videoJobVoiceSummary(job);
+    panel.setAttribute('data-state', !job.total_cues ? 'empty' : !ready ? 'missing' : voices?.missing_voices ? 'voices' : 'ready');
+    const heading = document.createElement('p');
+    heading.className = 'video-job-cue-heading';
+    heading.textContent = !job.total_cues ? 'No dialogue cues extracted yet' :
+        ready ? voices?.missing_voices ? 'Khmer text saved · voices incomplete' : 'All Khmer text saved' : 'Khmer text still needed';
+    panel.appendChild(heading);
+    const counts = document.createElement('div');
+    counts.className = 'video-job-cue-counts';
+    for (const [label, value] of [['Total cues', job.total_cues], ['Khmer saved', job.translated_cues], ['Missing text', job.missing_cues]]) {
+        const stat = document.createElement('div');
+        const number = document.createElement('strong');
+        number.textContent = String(value ?? 0);
+        const caption = document.createElement('span');
+        caption.textContent = label;
+        stat.appendChild(number);
+        stat.appendChild(caption);
+        counts.appendChild(stat);
+    }
+    panel.appendChild(counts);
+    if (job.missing_cue_ids?.length) {
+        const missing = document.createElement('p');
+        missing.className = 'video-job-missing-cues';
+        const more = job.missing_cues - job.missing_cue_ids.length;
+        missing.textContent = `Missing text: ${job.missing_cue_ids.map(id => `[${id}]`).join(', ')}${more > 0 ? ` · ${more} more` : ''}`;
+        panel.appendChild(missing);
+    }
+    if (voices && voices.voice_cues > 0) {
+        const audio = document.createElement('div');
+        audio.className = 'video-job-voice-counts';
+        const count = document.createElement('strong');
+        count.textContent = `Khmer voices: ${voices.ready_voices} / ${voices.voice_cues} saved`;
+        audio.appendChild(count);
+        const pending = document.createElement('span');
+        pending.textContent = voices.missing_voices ? `${voices.missing_voices} voice clip${voices.missing_voices === 1 ? '' : 's'} still needed` : 'All voice clips saved';
+        audio.appendChild(pending);
+        if (voices.missing_voice_ids?.length) {
+            const ids = document.createElement('p');
+            const more = voices.missing_voices - voices.missing_voice_ids.length;
+            ids.textContent = `Missing voices: ${voices.missing_voice_ids.map(id => `[${id}]`).join(', ')}${more > 0 ? ` · ${more} more` : ''}`;
+            audio.appendChild(ids);
+        }
+        panel.appendChild(audio);
+    }
+    return panel;
+}
+
+async function setVideoJobAudioMix(jobId, updates) {
+    if (changingVideoJobs.has(jobId) || removingVideoJobs.has(jobId)) return;
+    changingVideoJobs.add(jobId);
+    videoJobsGeneration++;
+    renderVideoJobs();
+    try {
+        const response = await fetch(`/api/video/job/${encodeURIComponent(jobId)}/audio-mix`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates)
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(videoApiError(data, 'Could not save audio settings'));
+        videoJobsGeneration++;
+        // A late save must never bring back a task removed by another request.
+        if (videoJobSummaries.has(jobId)) videoJobSummaries.set(jobId, { ...videoJobSummaries.get(jobId), ...data });
+        if (currentDownloadJob?.id === jobId) {
+            Object.assign(currentDownloadJob, data);
+            if (!studioDirty) applyStudioAudioMix(currentDownloadJob);
+        }
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        changingVideoJobs.delete(jobId);
+        renderVideoJobs();
+    }
+}
+
+async function rerenderVideoJobAudio(jobId) {
+    if (changingVideoJobs.has(jobId) || removingVideoJobs.has(jobId)) return;
+    if (studioJobId === jobId && studioDirty) {
+        showToast('Save your editor changes with Re-Render Video first.', 'info');
+        return;
+    }
+    changingVideoJobs.add(jobId);
+    renderVideoJobs();
+    try {
+        const response = await fetch(`/api/video/job/${encodeURIComponent(jobId)}/resume`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(getTranslationOptions())
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(videoApiError(data, 'Could not re-render audio'));
+        videoJobsGeneration++;
+        const job = videoJobSummaries.get(jobId);
+        if (job) Object.assign(job, { status: 'queued', stage: 'Queued — updating audio mix' });
+        showToast('Audio re-render queued. Saved dialogue and Khmer voices will be reused.', 'success');
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        changingVideoJobs.delete(jobId);
+        renderVideoJobs();
+        refreshVideoJobs();
+    }
+}
+
+function renderVideoJobAudioMix(job) {
+    const panel = document.createElement('div');
+    panel.className = 'video-job-audio-mix';
+    const supported = !!job.audio_mix;
+    const mix = job.audio_mix || { original_volume: 0, sound_effect: 'none', effect_volume: 8 };
+    const busy = changingVideoJobs.has(job.id) || removingVideoJobs.has(job.id);
+    const disabled = !supported || job.audio_mix_locked || busy;
+    const volumeRow = document.createElement('div');
+    volumeRow.className = 'video-job-mix-row';
+    const label = document.createElement('span');
+    label.className = 'video-job-mix-label';
+    label.textContent = 'Original audio';
+    volumeRow.appendChild(label);
+    const stepper = document.createElement('div');
+    stepper.className = 'video-job-volume-stepper';
+    stepper.setAttribute('role', 'group');
+    stepper.setAttribute('aria-label', `Original audio volume for ${videoJobName(job)}`);
+    for (const [step, text] of [[-1, '−'], [0, `${mix.original_volume}%`], [1, '+']]) {
+        const control = document.createElement(step ? 'button' : 'output');
+        control.textContent = text;
+        if (step) {
+            control.type = 'button';
+            control.disabled = disabled || (step < 0 ? mix.original_volume <= 0 : mix.original_volume >= 100);
+            control.setAttribute('aria-label', `${step < 0 ? 'Decrease' : 'Increase'} original audio by 1% for ${videoJobName(job)}`);
+            control.onclick = () => setVideoJobAudioMix(job.id, {
+                original_volume: Math.max(0, Math.min(100, mix.original_volume + step)), duck_original: false
+            });
+        } else {
+            control.setAttribute('aria-live', 'polite');
+            control.title = mix.duck_original ? 'Automatically lowered further during Khmer speech' : 'Khmer narration stays at full volume';
+        }
+        stepper.appendChild(control);
+    }
+    volumeRow.appendChild(stepper);
+    panel.appendChild(volumeRow);
+    const effectsRow = document.createElement('div');
+    effectsRow.className = 'video-job-mix-row';
+    const effectsLabel = document.createElement('label');
+    effectsLabel.className = 'video-job-mix-label';
+    effectsLabel.textContent = 'Sound effects';
+    effectsLabel.htmlFor = `job-sound-effect-${job.id}`;
+    effectsRow.appendChild(effectsLabel);
+    const effects = document.createElement('select');
+    effects.id = effectsLabel.htmlFor;
+    effects.className = 'video-job-effect-select';
+    effects.disabled = disabled;
+    for (const [value, text] of [['none', 'Off'], ['ambience', 'Soft ambience'], ['transitions', 'Soft whoosh · every 30s'], ['both', 'Ambience + whoosh']]) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = text;
+        effects.appendChild(option);
+    }
+    effects.value = mix.sound_effect;
+    effects.onchange = () => setVideoJobAudioMix(job.id, { sound_effect: effects.value });
+    effectsRow.appendChild(effects);
+    panel.appendChild(effectsRow);
+    const hint = document.createElement('p');
+    hint.className = 'video-job-mix-hint';
+    hint.textContent = !supported ? 'Restart the server to enable audio controls.' :
+        busy ? 'Saving…' : job.audio_mix_locked ? 'Final render in progress. Edit after it finishes or pause first.' :
+        job.needs_audio_remix ? 'Saved · re-render to apply to the video.' :
+        mix.duck_original ? 'Auto-ducking · Khmer narration at full volume.' : 'Saved · used in the final mix. Khmer voice stays at full volume.';
+    panel.appendChild(hint);
+    const source = document.createElement('small');
+    source.className = 'video-job-effect-note';
+    source.textContent = 'Generated effects. Keeping original audio doesn’t remove copyright.';
+    panel.appendChild(source);
+    return panel;
+}
 
 function setVideoSubmissionBusy(busy) {
     isSubmittingVideo = busy;
@@ -50,7 +309,7 @@ async function chooseDuplicateJob(action) {
     return loadCompletedDemoJob(duplicate.job_id);
 }
 
-async function resumeTrackedJob(jobId = activeVideoJobId) {
+async function resumeTrackedJob(jobId = activeVideoJobId, manualTranslation = false) {
     if (!jobId || isSubmittingVideo || changingVideoJobs.has(jobId) || removingVideoJobs.has(jobId)) return;
     changingVideoJobs.add(jobId);
     const selectionGeneration = trackingGeneration;
@@ -59,7 +318,7 @@ async function resumeTrackedJob(jobId = activeVideoJobId) {
     try {
         const response = await fetch(`/api/video/job/${jobId}/resume`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(getTranslationOptions())
+            body: JSON.stringify(manualTranslation ? { manual_translation: true } : getTranslationOptions())
         });
         const data = await response.json();
         if (!response.ok) throw new Error(videoApiError(data, 'Could not resume saved work'));
@@ -110,6 +369,7 @@ async function changeVideoCheckpoint(jobId, action, step = null) {
             studioDirty = false;
             currentDownloadJob = null;
             document.getElementById('dubbed-video-player')?.pause();
+            setCornerBlurPreviewSource('studio', null);
             document.getElementById('video-results-card').style.display = 'none';
         }
         showToast(step ? 'Saved step cleared. Resume to regenerate it.' : 'Paused. Completed work is saved.', 'success');
@@ -163,6 +423,8 @@ function renderJobCheckpoints(job) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    const mode = document.getElementById('video-translation-mode');
+    if (mode) mode.value = localStorage.getItem('khmer_video_translation_mode') || 'manual';
     initVideoDubberEvents();
     initVoiceTunerControls();
     let preferences = {};
@@ -176,23 +438,42 @@ function renderVideoJobs() {
     const list = document.getElementById('video-jobs-list');
     if (!list) return;
     list.innerHTML = '';
-    const priority = status => ['processing', 'running', 'rendering'].includes(status) ? 0 : status === 'queued' ? 1 : 2;
-    const jobs = Array.from(videoJobSummaries.values()).sort((a, b) => priority(a.status) - priority(b.status));
+    const jobs = Array.from(videoJobSummaries.values()).sort((a, b) =>
+        videoJobNameCollator.compare(videoJobName(a), videoJobName(b)) ||
+        videoJobNameCollator.compare(a.id, b.id));
     for (const job of jobs) {
         const row = document.createElement('div');
         row.className = 'video-job-row';
         row.setAttribute('data-status', job.status || 'queued');
+        if (job.status === 'awaiting_translation' && videoJobTranslationsReady(job)) row.setAttribute('data-translation-state', 'ready');
         row.setAttribute('aria-current', String(job.id === activeVideoJobId));
         const info = document.createElement('div');
         info.className = 'video-job-info';
         const title = document.createElement('strong');
-        title.textContent = job.title || job.id;
+        title.className = 'video-job-title';
+        title.textContent = videoJobName(job);
+        title.title = videoJobName(job);
+        const statusLine = document.createElement('div');
+        statusLine.className = 'video-job-statusline';
         const status = document.createElement('span');
-        const label = ['processing', 'running', 'rendering'].includes(job.status) ? 'Running' :
-            { queued: 'Queued', paused: 'Paused', pausing: 'Pausing' }[job.status] || job.status || 'Queued';
-        status.textContent = `${label} · ${job.progress || 0}% · ${job.stage || 'Queued'} · Job ${job.id}`;
+        status.className = 'video-job-status';
+        const label = job.status === 'awaiting_translation' && videoJobTranslationsReady(job) ? 'Ready for voices' :
+            ['processing', 'running', 'rendering'].includes(job.status) ? 'Running' :
+            { queued: 'Queued', paused: 'Paused', pausing: 'Pausing', awaiting_translation: 'Waiting for Khmer text',
+                completed: 'Completed', failed: 'Failed', interrupted: 'Interrupted' }[job.status] || job.status || 'Queued';
+        status.textContent = label;
+        const percentage = document.createElement('span');
+        percentage.className = 'video-job-percentage';
+        const progressValue = Math.min(100, Math.max(0, Number(job.progress) || 0));
+        percentage.textContent = `${Math.round(progressValue)}%`;
+        statusLine.appendChild(status);
+        statusLine.appendChild(percentage);
+        const stage = document.createElement('p');
+        stage.className = 'video-job-stage';
+        stage.textContent = job.stage || label;
         info.appendChild(title);
-        info.appendChild(status);
+        info.appendChild(statusLine);
+        info.appendChild(stage);
         if (job.error) {
             const error = document.createElement('span');
             error.className = 'video-job-error';
@@ -201,17 +482,65 @@ function renderVideoJobs() {
         }
         const progress = document.createElement('progress');
         progress.max = 100;
-        progress.value = job.progress || 0;
-        progress.setAttribute('aria-label', `Progress for ${job.title || job.id}`);
+        progress.value = progressValue;
+        progress.setAttribute('aria-label', `Progress for ${videoJobName(job)}`);
         info.appendChild(progress);
+        const cues = renderVideoJobCues(job);
+        if (cues) info.appendChild(cues);
+        const meta = document.createElement('span');
+        meta.className = 'video-job-meta';
+        meta.textContent = `Job ${job.id}`;
+        info.appendChild(meta);
+        info.appendChild(renderVideoJobAudioMix(job));
         const actions = document.createElement('div');
         actions.className = 'video-job-actions';
         const open = document.createElement('button');
-        open.className = 'btn-secondary btn-sm';
+        open.className = 'btn-secondary btn-sm video-job-open';
         open.textContent = job.id === activeVideoJobId ? 'Viewing' : 'Open';
         open.disabled = removingVideoJobs.has(job.id) || changingVideoJobs.has(job.id);
         open.onclick = () => loadCompletedDemoJob(job.id);
         actions.appendChild(open);
+        const details = document.createElement('a');
+        details.className = 'btn-secondary btn-sm';
+        details.textContent = 'Processing details';
+        details.href = `/static/processing.html?job=${encodeURIComponent(job.id)}`;
+        details.target = '_blank';
+        details.rel = 'noopener';
+        actions.appendChild(details);
+        const reuse = document.createElement('a');
+        reuse.className = 'btn-secondary btn-sm';
+        reuse.textContent = 'Export / replace video';
+        reuse.href = `/static/reuse.html?job=${encodeURIComponent(job.id)}`;
+        reuse.target = '_blank';
+        reuse.rel = 'noopener';
+        actions.appendChild(reuse);
+        if (job.status === 'awaiting_translation') {
+            if (videoJobTranslationsReady(job)) {
+                const proceed = document.createElement('button');
+                proceed.className = 'btn-primary btn-sm';
+                proceed.textContent = 'Continue: voices & video';
+                proceed.title = 'Generate Khmer voices and video from your saved translations';
+                proceed.disabled = isSubmittingVideo || removingVideoJobs.has(job.id) || changingVideoJobs.has(job.id);
+                proceed.onclick = () => resumeTrackedJob(job.id, true);
+                actions.appendChild(proceed);
+            } else {
+                const fix = document.createElement('a');
+                fix.className = 'btn-primary btn-sm';
+                fix.textContent = job.missing_cues > 0 ? `Fix ${job.missing_cues} cue${job.missing_cues === 1 ? '' : 's'} & continue` : 'Add Khmer text & continue';
+                fix.href = `/static/processing.html?job=${encodeURIComponent(job.id)}&fix=missing#missing-board`;
+                fix.target = '_blank';
+                fix.rel = 'noopener';
+                actions.appendChild(fix);
+            }
+        }
+        if (job.needs_audio_remix && job.status === 'completed') {
+            const remix = document.createElement('button');
+            remix.className = 'btn-primary btn-sm';
+            remix.textContent = 'Re-render audio';
+            remix.disabled = changingVideoJobs.has(job.id) || removingVideoJobs.has(job.id);
+            remix.onclick = () => rerenderVideoJobAudio(job.id);
+            actions.appendChild(remix);
+        }
         if (['queued', 'processing', 'running', 'rendering', 'pausing'].includes(job.status)) {
             const pause = document.createElement('button');
             pause.className = 'btn-secondary btn-sm';
@@ -223,7 +552,9 @@ function renderVideoJobs() {
         if (['failed', 'interrupted', 'paused'].includes(job.status)) {
             const resume = document.createElement('button');
             resume.className = 'btn-primary btn-sm';
-            resume.textContent = 'Resume';
+            const voices = videoJobVoiceSummary(job);
+            resume.textContent = videoJobTranslationsReady(job) && voices?.missing_voices ? `Retry ${voices.missing_voices} voices` : 'Resume';
+            resume.title = 'Continue saved work and retry missing Khmer clips. Successful translations and voices are kept.';
             resume.disabled = isSubmittingVideo || removingVideoJobs.has(job.id) || changingVideoJobs.has(job.id);
             resume.onclick = () => resumeTrackedJob(job.id);
             actions.appendChild(resume);
@@ -249,7 +580,17 @@ function renderVideoJobs() {
         if (job.steps?.length) row.appendChild(renderJobCheckpoints(job));
         list.appendChild(row);
     }
-    if (!videoJobSummaries.size) list.textContent = 'No video jobs yet. Upload videos to start.';
+    if (!videoJobSummaries.size) {
+        const empty = document.createElement('div');
+        empty.className = 'video-jobs-empty';
+        const title = document.createElement('strong');
+        title.textContent = 'Your videos will appear here';
+        const hint = document.createElement('p');
+        hint.textContent = 'Add videos above to track their progress, review dialogue, and download results.';
+        empty.appendChild(title);
+        empty.appendChild(hint);
+        list.appendChild(empty);
+    }
 }
 
 async function refreshVideoJobs() {
@@ -265,9 +606,13 @@ async function refreshVideoJobs() {
         if (!response.ok) throw new Error('Could not load video jobs');
         const data = await response.json();
         if (generation !== videoJobsGeneration) return;
+        await Promise.allSettled(data.jobs.map(loadVideoJobCueSummary));
+        if (generation !== videoJobsGeneration) return;
         videoJobSummaries.clear();
         for (const job of data.jobs) videoJobSummaries.set(job.id, job);
-        renderVideoJobs();
+        // Keep a native effect menu open while progress polls arrive.
+        if (document.activeElement?.className !== 'video-job-effect-select') renderVideoJobs();
+        updateVoiceRetryButton();
         const running = data.processing_count ?? Math.max(0, data.active_count - data.queued_count);
         document.getElementById('video-jobs-summary').textContent =
             `${running} / ${data.max_concurrent_jobs} running · ${data.queued_count} queued`;
@@ -287,6 +632,7 @@ async function refreshVideoJobs() {
 
 function forgetVideoTask(jobId) {
     videoJobSummaries.delete(jobId);
+    videoJobCueSummaryCache.delete(jobId);
     savedPipelineProgress.delete(jobId);
     expandedVideoJobSteps.delete(jobId);
     if (activeVideoJobId === jobId) {
@@ -305,6 +651,7 @@ function forgetVideoTask(jobId) {
         const player = document.getElementById('dubbed-video-player');
         player?.pause();
         player?.removeAttribute('src');
+        setCornerBlurPreviewSource('studio', null);
         document.getElementById('video-results-card').style.display = 'none';
     }
     if (duplicateVideoSubmission?.job_id === jobId) {
@@ -367,6 +714,10 @@ async function clearVideoTasksAndCache() {
 
 function selectVideoFiles(files) {
     selectedVideoFiles = Array.from(files);
+    if (cornerPreviewObjectUrl) URL.revokeObjectURL(cornerPreviewObjectUrl);
+    cornerPreviewObjectUrl = typeof Blob !== 'undefined' && selectedVideoFiles[0] instanceof Blob
+        ? URL.createObjectURL(selectedVideoFiles[0]) : null;
+    setCornerBlurPreviewSource('video', cornerPreviewObjectUrl);
     const totalMB = selectedVideoFiles.reduce((total, file) => total + file.size, 0) / (1024 * 1024);
     document.getElementById('selected-video-filename').textContent = selectedVideoFiles.length
         ? `${selectedVideoFiles.length} selected (${totalMB.toFixed(1)} MB): ${selectedVideoFiles.map(file => file.name).join(', ')}`
@@ -376,7 +727,9 @@ function selectVideoFiles(files) {
 
 const DEFAULT_VIDEO_RENDER_OPTIONS = {
     add_logo: false, logo_id: 'cinekhmer', blur_chinese_subtitles: false,
-    blur_x: 0.10, blur_y: 0.80, blur_width: 0.80, blur_height: 0.14, burn_subtitles: false
+    blur_x: 0.10, blur_y: 0.80, blur_width: 0.80, blur_height: 0.14, burn_subtitles: false,
+    blur_corner: false, corner_blur_x: 0.01, corner_blur_y: 0.02,
+    corner_blur_width: 0.20, corner_blur_height: 0.08
 };
 
 function getVideoRenderOptions(prefix = 'video') {
@@ -384,12 +737,15 @@ function getVideoRenderOptions(prefix = 'video') {
     options.add_logo = Boolean(document.getElementById(`${prefix}-add-logo`)?.checked);
     options.logo_id = document.getElementById(`${prefix}-logo-id`)?.value || options.logo_id;
     options.blur_chinese_subtitles = Boolean(document.getElementById(`${prefix}-blur-subtitles`)?.checked);
+    options.blur_corner = Boolean(document.getElementById(`${prefix}-blur-corner`)?.checked);
     const burnId = prefix === 'video' ? 'burn-subs-checkbox' : 'studio-burn-subs-checkbox';
     options.burn_subtitles = Boolean(document.getElementById(burnId)?.checked);
     for (const name of ['x', 'y', 'width', 'height']) {
         const input = document.getElementById(`${prefix}-blur-${name}`);
         const value = parseFloat(input?.value);
         if (Number.isFinite(value)) options[`blur_${name}`] = value / 100;
+        const cornerValue = parseFloat(document.getElementById(`${prefix}-corner-blur-${name}`)?.value);
+        if (Number.isFinite(cornerValue)) options[`corner_blur_${name}`] = cornerValue / 100;
     }
     return options;
 }
@@ -406,7 +762,7 @@ function applyVideoRenderOptions(prefix, values = {}) {
         }
         logo.value = options.logo_id;
     }
-    for (const [suffix, value] of [['add-logo', options.add_logo], ['blur-subtitles', options.blur_chinese_subtitles]]) {
+    for (const [suffix, value] of [['add-logo', options.add_logo], ['blur-subtitles', options.blur_chinese_subtitles], ['blur-corner', options.blur_corner]]) {
         const input = document.getElementById(`${prefix}-${suffix}`);
         if (input) input.checked = value;
     }
@@ -415,17 +771,73 @@ function applyVideoRenderOptions(prefix, values = {}) {
     for (const name of ['x', 'y', 'width', 'height']) {
         const input = document.getElementById(`${prefix}-blur-${name}`);
         if (input) input.value = Math.round(options[`blur_${name}`] * 100);
+        const cornerInput = document.getElementById(`${prefix}-corner-blur-${name}`);
+        if (cornerInput) cornerInput.value = Number((options[`corner_blur_${name}`] * 100).toFixed(3));
     }
     const preview = document.getElementById(`${prefix}-logo-preview`);
     if (preview) preview.src = `/api/video/logo/${encodeURIComponent(options.logo_id)}`;
+    updateCornerBlurPreview(prefix, options);
 }
 
 function onVideoEffectsChange(prefix) {
     const options = getVideoRenderOptions(prefix);
+    updateCornerBlurPreview(prefix, options);
     const preview = document.getElementById(`${prefix}-logo-preview`);
     if (preview) preview.src = `/api/video/logo/${encodeURIComponent(options.logo_id)}`;
     try { localStorage.setItem('khmer_video_render_options', JSON.stringify(options)); } catch {}
     if (prefix === 'studio') markStudioDirty();
+}
+
+const CORNER_BLUR_PRESETS = {
+    'top-left': { x: .01, y: .02 }, 'top-right': { x: .79, y: .02 },
+    'bottom-left': { x: .01, y: .90 }, 'bottom-right': { x: .79, y: .90 }
+};
+
+function setCornerBlurPreset(prefix, corner) {
+    const position = CORNER_BLUR_PRESETS[corner];
+    if (!position) return;
+    const options = { ...getVideoRenderOptions(prefix), blur_corner: true,
+        corner_blur_x: position.x, corner_blur_y: position.y,
+        corner_blur_width: .20, corner_blur_height: .08 };
+    applyVideoRenderOptions(prefix, options);
+    onVideoEffectsChange(prefix);
+}
+
+function updateCornerBlurPreview(prefix, options = getVideoRenderOptions(prefix)) {
+    const overlay = document.getElementById(`${prefix}-corner-blur-overlay`);
+    if (!overlay) return;
+    const x = options.corner_blur_x, y = options.corner_blur_y;
+    const width = options.corner_blur_width, height = options.corner_blur_height;
+    const valid = [x, y, width, height].every(Number.isFinite) &&
+        x >= 0 && y >= 0 && width > 0 && height > 0 && x + width <= 1.000001 && y + height <= 1.000001;
+    overlay.hidden = !options.blur_corner || !valid;
+    Object.assign(overlay.style, { left: `${x * 100}%`, top: `${y * 100}%`, width: `${width * 100}%`, height: `${height * 100}%` });
+    const error = document.getElementById(`${prefix}-corner-blur-error`);
+    if (error) error.hidden = valid;
+    const preset = document.getElementById(`${prefix}-corner-blur-preset`);
+    if (preset) preset.value = Object.keys(CORNER_BLUR_PRESETS).find(key => {
+        const position = CORNER_BLUR_PRESETS[key];
+        return Math.abs(position.x - x) < .000001 && Math.abs(position.y - y) < .000001 &&
+            Math.abs(width - .20) < .000001 && Math.abs(height - .08) < .000001;
+    }) || 'custom';
+}
+
+function setCornerBlurPreviewSource(prefix, source) {
+    const player = document.getElementById(`${prefix}-corner-preview-video`);
+    if (!player) return;
+    player.pause();
+    player.hidden = !source;
+    const placeholder = document.getElementById(`${prefix}-corner-preview-placeholder`);
+    if (placeholder) placeholder.hidden = Boolean(source);
+    const frame = document.getElementById(`${prefix}-corner-preview-frame`);
+    if (frame) frame.style.aspectRatio = '16 / 9';
+    if (source) player.src = source;
+    else { player.removeAttribute('src'); player.load(); }
+}
+
+function updateCornerBlurPreviewAspect(prefix, player) {
+    const frame = document.getElementById(`${prefix}-corner-preview-frame`);
+    if (frame && player.videoWidth && player.videoHeight) frame.style.aspectRatio = `${player.videoWidth} / ${player.videoHeight}`;
 }
 
 function videoApiError(data, fallback) {
@@ -677,6 +1089,7 @@ async function handleUrlDubbing(forceNew = false) {
             body: JSON.stringify({
                 url: url,
                 force_new: forceNew === true,
+                manual_translation: document.getElementById('video-translation-mode')?.value === 'manual',
                 voice_type: voiceType,
                 tone: tone,
                 audio_mode: audioMode,
@@ -748,6 +1161,7 @@ async function handleFileDubbing(forceNew = false, retryFiles = null) {
     }
     const tuner = getVoiceTunerValues();
     const settings = {
+        manual_translation: document.getElementById('video-translation-mode')?.value === 'manual',
         force_new: String(forceNew === true),
         voice_type: document.getElementById('video-voice-select').value,
         tone: document.getElementById('video-tone-select').value,
@@ -874,6 +1288,9 @@ function startPollingJobStatus(jobId) {
                 clearInterval(pollInterval);
                 if (job.segments?.length) displayCompletedVideo(job);
                 showToast(`Dubbing failed: ${job.error || "Unknown error"}`, "error");
+            } else if (job.status === 'awaiting_translation') {
+                clearInterval(pollInterval);
+                showToast('Original dialogue is ready. Open Processing details to copy it and import your Khmer translation.', 'success');
             } else if (['interrupted', 'paused'].includes(job.status)) {
                 clearInterval(pollInterval);
                 document.getElementById('pipeline-resume-btn').style.display = '';
@@ -892,6 +1309,8 @@ function startPollingJobStatus(jobId) {
 
 // Update Visual Pipeline Stages
 function updatePipelineProgress(job) {
+    const detailsLink = document.getElementById('pipeline-details-link');
+    if (detailsLink && job.id) detailsLink.href = `/static/processing.html?job=${encodeURIComponent(job.id)}`;
     if (job.id) savedPipelineProgress.set(job.id, job);
     const stageText = document.getElementById('pipeline-stage-text');
     const percentText = document.getElementById('pipeline-percent-text');
@@ -953,6 +1372,68 @@ let studioJobId = null;
 let studioSegments = [];
 let studioDirty = false;
 let isRepairingMissing = false;
+let isRenderingStudio = false;
+let isCheckingVoices = false;
+
+function pendingKhmerVoices(segments = studioSegments) {
+    return segments.filter(seg => (seg.translation || '').trim() &&
+        (seg.audio_source === 'original_fallback' || seg.tts_error || !seg.audio_file || seg._dirty));
+}
+
+function updateVoiceRetryButton() {
+    const button = document.getElementById('btn-retry-voices');
+    if (!button) return;
+    const job = videoJobSummaries.get(studioJobId) || (currentDownloadJob?.id === studioJobId ? currentDownloadJob : null);
+    const active = ['processing', 'queued', 'running', 'rendering', 'pausing'].includes(job?.status);
+    const count = pendingKhmerVoices().length;
+    button.disabled = !studioJobId || isRenderingStudio || isCheckingVoices;
+    button.textContent = isCheckingVoices ? 'Checking saved voices…' : isRenderingStudio ? 'Queuing voice recovery…' :
+        active ? 'View voice progress' : count ? `Retry ${count} Khmer voice${count === 1 ? '' : 's'}` : 'Check Khmer voices';
+    button.title = !studioJobId ? 'Open a saved job first' : active ? 'This task is already running. View its current progress.' :
+        count ? 'Retry missing or failed Khmer audio while keeping successful clips' : 'Check the latest saved job for missing or failed voices';
+}
+
+function showTrackedVoiceProgress(jobId) {
+    activeVideoJobId = jobId;
+    setPipelineUIState('active');
+    startPollingJobStatus(jobId);
+    document.getElementById('video-pipeline-card')?.scrollIntoView({ behavior: 'smooth' });
+    showToast('This task is already running. Showing its current voice progress.', 'info');
+}
+
+async function studioRetryFailedVoices() {
+    if (!studioJobId) return showToast('Open a saved video job first.', 'info');
+    if (isCheckingVoices || isRenderingStudio) return;
+    const jobId = studioJobId;
+    const generation = trackingGeneration;
+    const known = videoJobSummaries.get(jobId) || (currentDownloadJob?.id === jobId ? currentDownloadJob : null);
+    const active = job => ['processing', 'queued', 'running', 'rendering', 'pausing'].includes(job?.status);
+    if (active(known)) return showTrackedVoiceProgress(jobId);
+    isCheckingVoices = true;
+    updateVoiceRetryButton();
+    try {
+        const response = await fetch(`/api/video/status/${encodeURIComponent(jobId)}`);
+        const job = await response.json();
+        if (!response.ok) throw new Error(videoApiError(job, 'Could not check saved voices'));
+        if (studioJobId !== jobId || generation !== trackingGeneration) return;
+        if (active(job)) {
+            showTrackedVoiceProgress(jobId);
+        } else if (!studioDirty && !pendingKhmerVoices(job.segments || []).length) {
+            displayCompletedVideo(job);
+            const untranslated = (job.segments || []).some(seg => (seg.text || '').trim() && (!(seg.translation || '').trim() || seg.translation_error));
+            showToast(untranslated ? 'Translate the missing dialogue before generating Khmer voices.' :
+                'No missing or failed voices are reported for the translated cues. Use Re-Render Video to export saved audio.', 'info');
+        } else {
+            isCheckingVoices = false;
+            await studioRerenderVideo();
+        }
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        isCheckingVoices = false;
+        updateVoiceRetryButton();
+    }
+}
 let studioVoiceTunerSnapshot = null;
 let studioAudioSnapshot = '';
 let studioBackgroundSnapshot = '';
@@ -963,6 +1444,22 @@ function studioAudioFingerprint() {
         id: seg.id, start: seg.start, end: seg.end, translation: seg.translation,
         voice_type: seg.voice_type, rate: seg.rate, pitch: seg.pitch, volume: seg.volume
     })));
+}
+
+function applyStudioAudioMix(job) {
+    const mix = job.audio_mix || job.result?.audio_mix;
+    const select = document.getElementById('studio-bg-volume');
+    if (!mix || !select) return;
+    const value = mix.duck_original ? '-1' : (mix.original_volume / 100).toString();
+    let option = Array.from(select.options).find(item => Number(item.value) === Number(value));
+    if (!option) {
+        option = document.createElement('option');
+        option.value = value;
+        option.textContent = `Original Audio ${mix.original_volume}% (Khmer voice at full volume)`;
+        select.appendChild(option);
+    }
+    select.value = option.value;
+    studioBackgroundSnapshot = select.value;
 }
 
 function displayCompletedVideo(job) {
@@ -978,6 +1475,8 @@ function displayCompletedVideo(job) {
     studioSegments = JSON.parse(JSON.stringify(job.segments || []));
     studioVoiceTunerSnapshot = getVoiceTunerValues();
     applyVideoRenderOptions('studio', job.render_options || job.result?.render_options || {});
+    setCornerBlurPreviewSource('studio', `/api/video/job/${encodeURIComponent(job.id)}/source-video`);
+    applyStudioAudioMix(job);
 
     // Ensure every segment has voice_type
     studioSegments.forEach(s => {
@@ -1066,6 +1565,8 @@ function renderStudioCueCards() {
     const missingCount = studioSegments.filter(seg => (seg.text || '').trim() && !(seg.translation || '').trim()).length;
     const repairBtn = document.getElementById('btn-translate-missing');
     if (repairBtn) repairBtn.disabled = isRepairingMissing || missingCount === 0;
+    const voiceCount = pendingKhmerVoices().length;
+    updateVoiceRetryButton();
     const filterText = (document.getElementById('studio-search-input')?.value || '').toLowerCase().trim();
 
     studioSegments.forEach((seg, idx) => {
@@ -1149,6 +1650,7 @@ function renderStudioCueCards() {
                     ${seg.translation_warning ? `<div class="cue-translation-warning" role="status"><i class="ph ph-info"></i> ${escapeHtml(seg.translation_warning)}</div>` : ''}
                     ${seg.source_warning ? `<div class="cue-translation-warning" role="status"><i class="ph ph-warning-circle"></i> ${escapeHtml(seg.source_warning)}</div>` : ''}
                     ${seg.generation_warning ? `<div class="cue-translation-warning" role="status"><i class="ph ph-warning-circle"></i> ${escapeHtml(seg.generation_warning)}</div>` : ''}
+                    ${seg.tts_error && !seg.generation_warning ? `<div class="cue-translation-warning" role="status">Khmer voice pending: ${escapeHtml(seg.tts_error)}. Use Retry failed Khmer voices.</div>` : ''}
                     <textarea 
                         class="cue-khmer-textarea" 
                         placeholder="Enter or edit Khmer translation..." 
@@ -1178,7 +1680,7 @@ function renderStudioCueCards() {
         container.appendChild(card);
     });
 
-    if (countEl) countEl.textContent = `${studioSegments.length} Cues${missingCount ? ` · ${missingCount} untranslated` : ''}`;
+    if (countEl) countEl.textContent = `${studioSegments.length} Cues${missingCount ? ` · ${missingCount} untranslated` : ''}${voiceCount ? ` · ${voiceCount} voices need retry` : ''}`;
     if (statusEl) {
         if (overlapCount > 0) {
             statusEl.className = 'badge-status has-collision';
@@ -1419,7 +1921,8 @@ async function studioAutoFixOverlaps() {
 
 // Re-render Video with All Studio Edits
 async function studioRerenderVideo() {
-    if (!studioJobId) return;
+    if (!studioJobId || isRenderingStudio) return;
+    isRenderingStudio = true;
     const jobId = studioJobId;
     const generation = trackingGeneration;
 
@@ -1427,6 +1930,7 @@ async function studioRerenderVideo() {
     const origHtml = btn.innerHTML;
     btn.innerHTML = `<i class="ph ph-spinner ph-spin"></i> Re-rendering Video...`;
     btn.disabled = true;
+    updateVoiceRetryButton();
 
     const bgVol = parseFloat(document.getElementById('studio-bg-volume').value || "0.0");
     let audioMode = "replace";
@@ -1443,8 +1947,8 @@ async function studioRerenderVideo() {
     try {
         const tuner = getVoiceTunerValues();
         const recovery = currentDownloadJob?.status === 'failed';
-        const visualOnly = !recovery && currentDownloadJob?.result?.dubbed_video_path &&
-            !currentDownloadJob.needs_rerender && studioAudioFingerprint() === studioAudioSnapshot &&
+        const visualOnly = !recovery && !pendingKhmerVoices().length && currentDownloadJob?.result?.dubbed_video_path &&
+            !currentDownloadJob.needs_rerender && !currentDownloadJob.needs_audio_remix && studioAudioFingerprint() === studioAudioSnapshot &&
             studioVoiceTunerSnapshot?.rate === tuner.rate && studioVoiceTunerSnapshot?.pitch === tuner.pitch &&
             studioVoiceTunerSnapshot?.volume === tuner.volume &&
             (document.getElementById('studio-bg-volume')?.value || '') === studioBackgroundSnapshot;
@@ -1480,8 +1984,10 @@ async function studioRerenderVideo() {
     } catch (e) {
         showToast("Re-render error: " + e.message, "error");
     } finally {
+        isRenderingStudio = false;
         btn.innerHTML = origHtml;
         btn.disabled = false;
+        updateVoiceRetryButton();
     }
 }
 
@@ -1629,6 +2135,7 @@ function setPipelineUIState(state) {
 
     if (state === 'active') {
         pipelineCard.style.display = 'block';
+        document.getElementById('studio-corner-preview-video')?.pause();
         document.getElementById('video-results-card').style.display = 'none';
         document.getElementById('pipeline-progress-fill').style.width = '0%';
         document.getElementById('pipeline-percent-text').textContent = '…';
@@ -1681,7 +2188,7 @@ async function loadCompletedDemoJob(jobId = 'bea1cc9b') {
         if (job.status === 'completed' || (job.status === 'failed' && job.segments?.length)) {
             displayCompletedVideo(job);
             showToast(`Loaded CapCut Dubbing Studio for ${job.title || jobId}!`, "success");
-        } else if (['processing', 'queued', 'interrupted', 'failed', 'paused', 'pausing', 'running', 'rendering'].includes(job.status)) {
+        } else if (['processing', 'queued', 'interrupted', 'failed', 'paused', 'pausing', 'running', 'rendering', 'awaiting_translation'].includes(job.status)) {
             setPipelineUIState('active');
             updatePipelineProgress(job);
             startPollingJobStatus(jobId);

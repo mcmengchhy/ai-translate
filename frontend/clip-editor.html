@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quick clip editor · Khmer Video Dubber</title>
+    <link rel="stylesheet" href="/static/css/reuse.css?v=20261126-2">
+    <link rel="stylesheet" href="/static/css/clip-editor.css?v=20261126-1">
+    <script src="/static/js/clip-editor.js?v=20261126-colors-2" defer></script>
+</head>
+<body>
+<main>
+    <header><a href="/">Video jobs &amp; editor</a><a href="/static/reuse.html">Khmer exports &amp; replacement video</a></header>
+    <section class="intro">
+        <p class="eyebrow">UPLOAD · EDIT · DOWNLOAD</p>
+        <h1>Quick clip editor</h1>
+        <p>Flip a video, adjust its speed and color, and add generated sound effects. Upload your clip directly. Your last settings are remembered for the next upload.</p>
+    </section>
+    <p id="clip-message" role="status" aria-live="polite"></p>
+    <form id="clip-form" class="workspace">
+        <section class="panel" aria-labelledby="upload-title">
+            <h2 id="upload-title">Your clip</h2>
+            <label for="clip-file">Choose a video</label>
+            <input id="clip-file" type="file" accept="video/*,.mp4,.mov,.mkv,.webm,.avi,.flv,.ts" required>
+            <div id="clip-preview-empty" class="preview-empty">Upload a clip to preview your edits.</div>
+            <div id="clip-preview-frame" class="preview-frame" hidden>
+                <video id="clip-preview" playsinline preload="metadata"></video>
+            </div>
+            <div id="clip-preview-controls" class="preview-controls" hidden>
+                <button id="clip-preview-play" type="button">Play preview</button>
+                <input id="clip-preview-seek" type="range" min="0" max="100" step="0.1" value="0" aria-label="Seek preview">
+            </div>
+            <p id="clip-file-info" class="hint"></p>
+            <p class="hint">Preview shows flip, playback speed, and approximate color. Generated sound effects are included in the rendered download.</p>
+        </section>
+        <section class="panel" aria-labelledby="settings-title">
+            <div class="heading"><h2 id="settings-title">Edit settings</h2><button id="clip-reset" type="button">Reset settings</button></div>
+            <div class="clip-settings-grid">
+                <div><label for="clip-flip">Flip video</label><select id="clip-flip"><option value="horizontal">Mirror left / right</option><option value="none">No flip</option><option value="vertical">Flip top / bottom</option><option value="both">Flip both directions</option></select></div>
+                <div><label for="clip-speed">Playback speed</label><select id="clip-speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1× · original speed</option><option value="1.1">1.1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option></select></div>
+                <div>
+                    <label for="clip-color">Color filter</label>
+                    <select id="clip-color">
+                        <option value="normal">Original colors</option>
+                        <option value="vivid">Vivid</option>
+                        <option value="warm">Warm</option>
+                        <option value="cool">Cool</option>
+                        <option value="grayscale">Black &amp; white</option>
+                        <option value="sepia">Sepia</option>
+                        <option value="cinematic">Cinematic</option>
+                        <option value="vintage">Vintage</option>
+                        <option value="soft">Soft</option>
+                        <option value="high_contrast">High contrast</option>
+                        <option value="muted">Muted</option>
+                        <option value="bright">Bright</option>
+                        <option value="dark">Dark</option>
+                        <option value="golden_hour">Golden hour</option>
+                        <option value="teal_orange">Teal &amp; orange</option>
+                        <option value="fade">Fade</option>
+                    </select>
+                </div>
+                <div><label for="clip-effect">Sound effects</label><select id="clip-effect"><option value="none">Off</option><option value="ambience">Soft ambience</option><option value="transitions">Whoosh · opening &amp; every 30s</option><option value="both">Ambience + whoosh</option></select></div>
+            </div>
+            <label for="clip-original-volume">Clip audio volume <output id="clip-original-volume-label" for="clip-original-volume">100%</output></label>
+            <input id="clip-original-volume" type="range" min="0" max="100" step="1" value="100">
+            <label for="clip-effect-volume">Sound effect volume <output id="clip-effect-volume-label" for="clip-effect-volume">8%</output></label>
+            <input id="clip-effect-volume" type="range" min="0" max="100" step="1" value="8">
+            <p class="hint">Speed changes keep audio and video together and preserve voice pitch. Set clip audio to 0% to mute it. Clips without audio are supported.</p>
+            <button class="primary" id="clip-render" type="submit" disabled>Render edited clip</button>
+        </section>
+    </form>
+    <section class="panel history" aria-labelledby="clip-history-title">
+        <div class="heading"><h2 id="clip-history-title">Your edited clips</h2><button id="clip-refresh" type="button">Refresh</button></div>
+        <p class="hint">Rendering continues in the background. Return here for your downloads.</p>
+        <div id="clip-history" aria-live="polite"><p>No edited clips yet.</p></div>
+    </section>
+</main>
+</body>
+</html>

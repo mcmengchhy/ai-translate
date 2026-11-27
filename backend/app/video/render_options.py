@@ -31,6 +31,11 @@ class VideoRenderOptions(BaseModel):
     blur_y: float = Field(default=0.80, ge=0, lt=1, allow_inf_nan=False)
     blur_width: float = Field(default=0.80, gt=0, le=1, allow_inf_nan=False)
     blur_height: float = Field(default=0.14, gt=0, le=1, allow_inf_nan=False)
+    blur_corner: bool = False
+    corner_blur_x: float = Field(default=0.01, ge=0, lt=1, allow_inf_nan=False)
+    corner_blur_y: float = Field(default=0.02, ge=0, lt=1, allow_inf_nan=False)
+    corner_blur_width: float = Field(default=0.20, gt=0, le=1, allow_inf_nan=False)
+    corner_blur_height: float = Field(default=0.08, gt=0, le=1, allow_inf_nan=False)
     burn_subtitles: bool = False
 
     @field_validator("logo_id")
@@ -44,6 +49,8 @@ class VideoRenderOptions(BaseModel):
     def validate_region(self):
         if self.blur_x + self.blur_width > 1.000001 or self.blur_y + self.blur_height > 1.000001:
             raise ValueError("The subtitle blur area must fit inside the video frame")
+        if self.corner_blur_x + self.corner_blur_width > 1.000001 or self.corner_blur_y + self.corner_blur_height > 1.000001:
+            raise ValueError("The corner blur area must fit inside the video frame")
         if self.add_logo:
             resolve_logo(self.logo_id)
         return self

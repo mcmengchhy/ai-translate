@@ -17,8 +17,9 @@ from typing import List, Dict, Any, Optional, Tuple
 import edge_tts
 
 from ..khmer import normalize_khmer_unicode
+from ..core import config
 from .segments import require_translations
-from .resources import resource_slot
+from .resources import resource_slot, wait_for_service, defer_service
 
 logger = logging.getLogger(__name__)
 
@@ -257,24 +258,28 @@ async def synthesize_segments(
         # Robust synthesis loop with 3 retries against Edge-TTS rate limits
         for attempt in range(3):
             try:
-                async with semaphore, resource_slot("voice_requests", 4):
-                    if consecutive_failures >= 8:
-                        seg.update(audio_file=None, tts_error="Voice service unavailable; queued for recovery")
-                        break
-                    communicate = edge_tts.Communicate(
-                        clean, voice,
-                        rate=eff_rate,
-                        pitch=eff_pitch,
-                        volume=eff_volume,
-                    )
-                    await asyncio.wait_for(communicate.save(str(clip_path)), timeout=30)
-                    if not clip_path.is_file() or clip_path.stat().st_size == 0:
-                        raise RuntimeError("Voice service returned an empty audio file")
+                async with semaphore:
+                    async with resource_slot("voice_requests", config.TTS_MAX_CONCURRENT_REQUESTS):
+                        if consecutive_failures >= 8:
+                            seg.update(audio_file=None, tts_error="Voice service unavailable; queued for recovery")
+                            break
+                        await wait_for_service("khmer_tts", interval=config.TTS_REQUEST_INTERVAL)
+                        communicate = edge_tts.Communicate(
+                            clean, voice,
+                            rate=eff_rate,
+                            pitch=eff_pitch,
+                            volume=eff_volume,
+                        )
+                        await asyncio.wait_for(communicate.save(str(clip_path)), timeout=30)
+                        if not clip_path.is_file() or clip_path.stat().st_size == 0:
+                            raise RuntimeError("Voice service returned an empty audio file")
 
                     if enhance:
-                        # Run studio EQ + loudnorm in executor to match preview audio exactly
+                        # Release the network slot while the exact same studio
+                        # enhancement runs, so another download can start.
                         from .resources import run_blocking
-                        await run_blocking(_enhance_audio_clip, str(clip_path))
+                        async with resource_slot("voice_enhancement", 2):
+                            await run_blocking(_enhance_audio_clip, str(clip_path))
 
                     seg["audio_file"] = str(clip_path)
                     seg["voice_type"] = seg_voice_type
@@ -290,13 +295,16 @@ async def synthesize_segments(
                     break
             except Exception as e:
                 consecutive_failures += 1
+                # Cool down all jobs after failures instead of immediately
+                # bursting more requests at an unavailable voice service.
+                defer_service("khmer_tts", 2 * (attempt + 1))
                 if attempt == 2 or consecutive_failures >= 8:
                     logger.error(f"Error synthesizing segment {seg['id']}: {e}")
                     seg["audio_file"] = None
                     seg["tts_error"] = str(e)
                     break
                 else:
-                    await asyncio.sleep(0.5 * (attempt + 1))
+                    await asyncio.sleep(2 * (attempt + 1))
 
         async with lock:
             done_count += 1

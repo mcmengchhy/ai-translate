@@ -62,6 +62,18 @@ class SubtitleQualityTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 VideoRenderOptions(**values)
 
+    def test_corner_region_rejects_out_of_frame_and_nonfinite_coordinates(self):
+        for values in ({"corner_blur_x": .9}, {"corner_blur_y": .99},
+                       {"corner_blur_width": 0}, {"corner_blur_height": 1.1},
+                       {"corner_blur_x": -.01}, {"corner_blur_y": float("inf")},
+                       {"corner_blur_width": float("nan")}):
+            with self.subTest(values=values), self.assertRaises(ValidationError):
+                VideoRenderOptions(blur_corner=True, **values)
+        options = VideoRenderOptions(blur_corner=True, corner_blur_x=.8, corner_blur_y=.9,
+                                     corner_blur_width=.2, corner_blur_height=.1)
+        self.assertEqual(options.render_values()["corner_blur_x"], .8)
+        self.assertFalse(VideoRenderOptions().blur_corner)
+
 
 class EffectsApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -95,7 +107,8 @@ class EffectsApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 400)
 
     async def test_effects_are_forwarded_for_url_and_upload(self):
-        effects = {"add_logo": True, "logo_id": "khmerdub", "blur_chinese_subtitles": True, "burn_subtitles": True}
+        effects = {"add_logo": True, "logo_id": "khmerdub", "blur_chinese_subtitles": True, "burn_subtitles": True,
+                   "blur_corner": True, "corner_blur_x": .02, "corner_blur_width": .21}
         worker = AsyncMock()
         with patch.object(video_routes, "create_job", return_value="test"), patch.object(video_routes, "run_video_dubbing_pipeline", worker), patch.object(video_routes, "STORAGE_UPLOADS", self.root):
             response = await self.client.post("/api/video/dub-url", json={"url": "https://example.com/video.mp4", **effects})
@@ -105,6 +118,27 @@ class EffectsApiTests(unittest.IsolatedAsyncioTestCase):
         for call in worker.await_args_list:
             for key, value in effects.items():
                 self.assertEqual(call.kwargs["render_options"][key], value)
+
+    async def test_invalid_corner_region_is_rejected_before_an_upload_is_stored(self):
+        with patch.object(video_routes, "_store_upload", AsyncMock()) as store:
+            response = await self.client.post("/api/video/dub-upload", files={"file": ("video.mp4", b"video")},
+                                              data={"blur_corner": "true", "corner_blur_x": ".95"})
+        self.assertEqual(response.status_code, 422)
+        store.assert_not_awaited()
+
+    async def test_saved_source_preview_returns_media_and_handles_missing_sources(self):
+        source = self.root / "source.mp4"
+        source.write_bytes(b"saved source")
+        with patch.object(video_routes, "get_job_status", return_value={"video_path": str(source)}):
+            response = await self.client.get("/api/video/job/test/source-video")
+            self.assertEqual(response.content, b"saved source")
+            response = await self.client.get("/api/video/job/test/source-video", headers={"Range": "bytes=0-4"})
+            self.assertEqual(response.status_code, 206)
+            self.assertEqual(response.content, b"saved")
+            source.unlink()
+            self.assertEqual((await self.client.get("/api/video/job/test/source-video")).status_code, 404)
+        with patch.object(video_routes, "get_job_status", return_value=None):
+            self.assertEqual((await self.client.get("/api/video/job/missing/source-video")).status_code, 404)
 
     async def test_rerender_persists_effects(self):
         source = self.root / "video.mp4"
@@ -124,15 +158,23 @@ class EffectsApiTests(unittest.IsolatedAsyncioTestCase):
                "result": {"dubbed_video_path": str(completed)}}
         renderer = AsyncMock(return_value={"dubbed_video_path": str(self.root / "visual.mp4")})
         with patch.object(video_routes, "get_job_status", return_value=job), patch.object(video_routes, "_save_job"), patch.object(video_routes, "assemble_dubbed_video", renderer):
-            response = await self.client.post("/api/video/job/test/visual-update", json={"blur_chinese_subtitles": True})
+            response = await self.client.post("/api/video/job/test/visual-update", json={"blur_chinese_subtitles": True, "blur_corner": True, "corner_blur_width": .25})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(renderer.await_args.kwargs["prepared_audio_path"], str(completed))
         self.assertIn("_visual_", renderer.await_args.kwargs["output_filename"])
         self.assertTrue(job["render_options"]["blur_chinese_subtitles"])
+        self.assertTrue(job["render_options"]["blur_corner"])
+        self.assertEqual(renderer.await_args.kwargs["render_options"]["corner_blur_width"], .25)
         self.assertEqual(job["status"], "completed")
 
     async def test_visual_update_rejects_unrendered_dialogue_edits(self):
         job = {"status": "completed", "needs_rerender": True, "segments": []}
+        with patch.object(video_routes, "get_job_status", return_value=job):
+            response = await self.client.post("/api/video/job/test/visual-update", json={"blur_chinese_subtitles": True})
+        self.assertEqual(response.status_code, 409)
+
+    async def test_visual_update_cannot_copy_a_video_with_unrepaired_original_speech(self):
+        job = {"status": "completed", "segments": [{"id": 1, "audio_source": "original_fallback"}]}
         with patch.object(video_routes, "get_job_status", return_value=job):
             response = await self.client.post("/api/video/job/test/visual-update", json={"blur_chinese_subtitles": True})
         self.assertEqual(response.status_code, 409)
@@ -178,12 +220,46 @@ class EffectsMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(blurred[98:110, 20:140].var(), original[98:110, 20:140].var() / 4)
         self.assertLess(np.abs(original[10:70, 10:90] - blurred[10:70, 10:90]).mean(), 8)
 
+    async def test_corner_and_subtitle_blurs_can_be_rendered_together_in_every_corner(self):
+        original = self.frame(self.source).astype(float)
+        for name, x, y in (("tl", .0, .0), ("tr", .6, .0), ("bl", .0, .6), ("br", .6, .6)):
+            with self.subTest(corner=name), patch.object(dubber, "DUBBED_DIR", self.root):
+                result = await dubber.assemble_dubbed_video(str(self.source), [], f"corner-{name}.mp4",
+                    render_options={"blur_corner": True, "corner_blur_x": x, "corner_blur_y": y,
+                                    "corner_blur_width": .4, "corner_blur_height": .2,
+                                    "blur_chinese_subtitles": True})
+                image = self.frame(result["dubbed_video_path"]).astype(float)
+                left, top = int(x * self.width), int(y * self.height)
+                area = np.s_[top + 4:top + 20, left + 4:left + 60]
+                self.assertLess(image[area].var(), original[area].var() / 4)
+                self.assertLess(image[98:110, 20:140].var(), original[98:110, 20:140].var() / 4)
+                self.assertLess(np.abs(original[35:65, 65:95] - image[35:65, 65:95]).mean(), 8)
+
+    async def test_corner_only_blurs_the_default_banner_and_preserves_subtitle_area(self):
+        with patch.object(dubber, "DUBBED_DIR", self.root):
+            result = await dubber.assemble_dubbed_video(str(self.source), [], "corner-only.mp4", render_options={"blur_corner": True})
+        original = self.frame(self.source).astype(float)
+        image = self.frame(result["dubbed_video_path"]).astype(float)
+        self.assertLess(image[4:8, 4:28].var(), original[4:8, 4:28].var() / 4)
+        self.assertLess(np.abs(original[98:110, 20:140] - image[98:110, 20:140]).mean(), 8)
+
+    async def test_corner_blur_runs_before_our_logo(self):
+        with patch.object(dubber, "DUBBED_DIR", self.root), patch.object(dubber, "resolve_logo", return_value=self.logo):
+            result = await dubber.assemble_dubbed_video(str(self.black), [], "corner-logo.mp4", render_options={
+                "blur_corner": True, "corner_blur_x": .5, "corner_blur_width": .5,
+                "corner_blur_y": 0, "corner_blur_height": .5, "add_logo": True})
+        image = self.frame(result["dubbed_video_path"])
+        self.assertGreater(image[12:52, 108:148].mean(), 245)
+
     async def test_burned_khmer_captions_are_visible_only_during_their_cue(self):
         audio = self.root / "caption_voice.wav"
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1.1", str(audio)], check=True)
         segments = [{"id": 1, "start": .4, "end": 1.5, "text": "Hello", "translation": "សួស្តី", "audio_file": str(audio)}]
         with patch.object(dubber, "DUBBED_DIR", self.root), patch.object(dubber, "resolve_logo", return_value=self.logo):
-            result = await dubber.assemble_dubbed_video(str(self.black), segments, "captions.mp4", render_options={"add_logo": True, "blur_chinese_subtitles": True, "burn_subtitles": True})
+            result = await dubber.assemble_dubbed_video(str(self.black), segments, "captions.mp4", render_options={
+                "add_logo": True, "blur_chinese_subtitles": True, "burn_subtitles": True,
+                "blur_corner": True, "corner_blur_x": .5, "corner_blur_y": .5,
+                "corner_blur_width": .5, "corner_blur_height": .5})
         before = self.frame(result["dubbed_video_path"], "0.1")
         during = self.frame(result["dubbed_video_path"], "1")
         self.assertLess(before[75:].max(), 10)
@@ -197,7 +273,7 @@ class EffectsMediaTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(dubber, "schedule_non_overlapping_clips", side_effect=AssertionError("Audio must be retained")), patch.object(dubber, "build_master_audio_track", side_effect=AssertionError("Audio must be retained")):
                 updated = await dubber.assemble_dubbed_video(
                     str(self.source), [], "visual-update.mp4", prepared_audio_path=initial["dubbed_video_path"],
-                    render_options={"blur_chinese_subtitles": True},
+                    render_options={"blur_chinese_subtitles": True, "blur_corner": True},
                 )
         def audio(path):
             return subprocess.check_output(["ffmpeg", "-v", "error", "-i", path, "-map", "0:a:0", "-c", "copy", "-f", "adts", "-"])

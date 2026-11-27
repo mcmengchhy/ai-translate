@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Literal
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from .models import EngineOptions
 
@@ -22,9 +22,10 @@ from ..video.cache import cache_in_use
 from ..video.tts import synthesize_khmer_clip, synthesize_segments
 from ..video.dubber import DUBBED_DIR, assemble_dubbed_video, schedule_non_overlapping_clips, get_media_duration
 from ..khmer import normalize_khmer_unicode
-from ..video.segments import missing_translations, require_translations, MissingTranslationsError
+from ..video.segments import missing_translations, require_translations, MissingTranslationsError, translation_summary, voice_summary
 from ..video.render_options import VideoRenderOptions, LOGO_DIR, resolve_logo
 from ..video.checkpoints import ACTIVE_STATUSES, job_steps, mark_step, step_states
+from ..video.audio_mix import AudioMixSettings, saved_audio_mix, audio_mix_locked
 from ..core import config
 
 logger = logging.getLogger(__name__)
@@ -119,20 +120,37 @@ def _apply_segment_updates(job: dict, incoming: List[Dict[str, Any]]):
     """Treat edited times as new anchors, retaining anchors for unchanged cues."""
     previous = {seg.get("id"): seg for seg in job.get("segments", [])}
     updated = []
+    needs_rerender = False
+    audio_fields = ("audio_file", "audio_source", "prosody", "tts_error", "voice_retry_round",
+                    "generation_warning", "review_required", "fallback_subtitle", "_dirty")
+
+    def voice_setting(seg, key):
+        return seg.get(key) or (job.get("voice_type", "male") if key == "voice_type" else "auto")
+
     for original in incoming:
-        seg = dict(original)
+        old = previous.get(original.get("id"))
+        seg = {**(old or {}), **original}
         try:
             start, end = float(seg["start"]), float(seg["end"])
             if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start:
                 raise ValueError
         except (KeyError, TypeError, ValueError):
             raise HTTPException(status_code=422, detail="Cue times must be finite, non-negative, and end after start")
-        old = previous.get(seg.get("id"))
-        if old and seg.get("translation") and seg.get("translation") != old.get("translation"):
+        voice_changed = old is None or seg.get("translation", "") != old.get("translation", "") or any(
+            voice_setting(seg, key) != voice_setting(old, key)
+            for key in ("voice_type", "rate", "pitch", "volume")
+        )
+        # Audio metadata belongs to the server. An older browser snapshot must
+        # neither erase a newly generated clip nor restore an invalidated one.
+        for key in audio_fields:
+            seg.pop(key, None)
+            if old is not None and not voice_changed and key in old:
+                seg[key] = old[key]
+        if voice_changed:
             seg.pop("translation_error", None)
             seg.pop("translation_warning", None)
             seg.update(_dirty=True, audio_file=None)
-            job["needs_rerender"] = True
+            needs_rerender = True
         for field, value in (("start", start), ("end", end)):
             seg[field] = value
             if old is None or value != old.get(field):
@@ -141,9 +159,12 @@ def _apply_segment_updates(job: dict, incoming: List[Dict[str, Any]]):
                 seg[f"target_{field}"] = old.get(f"target_{field}", value)
         updated.append(seg)
     job["segments"] = sorted(updated, key=lambda seg: seg["target_start"])
+    if needs_rerender:
+        job["needs_rerender"] = True
 
 
 class VideoDubUrlRequest(EngineOptions, VideoRenderOptions):
+    manual_translation: bool = False
     force_new: bool = False
     url: str = Field(..., description="Bilibili, YouTube, or direct video URL")
     voice_type: str = Field(default="male", description="'male' (Piseth) or 'female' (Sreymom)")
@@ -189,6 +210,7 @@ class RepairTranslationsRequest(PolishDialogueRequest):
 
 
 class JobRerenderRequest(EngineOptions, VideoRenderOptions):
+    manual_translation: bool = False
     retranslate: bool = False
     segments: Optional[List[Dict[str, Any]]] = None
     audio_mode: str = "replace"  # "replace" (100% pure voiceover), "mute", "duck_subtle", "ducking", "smart_sidechain"
@@ -266,6 +288,7 @@ async def start_dubbing_from_url(req: VideoDubUrlRequest, background_tasks: Back
         raise HTTPException(status_code=400, detail="Video URL is required")
 
     worker_options = dict(is_url=True, voice_type=req.voice_type, tone=req.tone,
+                          manual_translation=req.manual_translation,
                           audio_mode=req.audio_mode, burn_subtitles=req.burn_subtitles,
                           render_options=req.render_values(), max_duration=req.max_duration,
                           engine_name=req.engine, model=req.model, base_url=req.base_url,
@@ -293,6 +316,7 @@ async def start_dubbing_from_url(req: VideoDubUrlRequest, background_tasks: Back
         engine_name=req.engine,
         model=req.model,
         base_url=req.base_url,
+        manual_translation=req.manual_translation,
         subtitle_file_path=req.subtitle_file_path,
         voice_rate=req.voice_rate,
         voice_pitch=req.voice_pitch,
@@ -318,6 +342,11 @@ async def start_dubbing_from_file(
     blur_y: float = Form(0.80),
     blur_width: float = Form(0.80),
     blur_height: float = Form(0.14),
+    blur_corner: bool = Form(False),
+    corner_blur_x: float = Form(0.01),
+    corner_blur_y: float = Form(0.02),
+    corner_blur_width: float = Form(0.20),
+    corner_blur_height: float = Form(0.08),
     max_duration: Optional[int] = Form(0),
     api_key: Optional[str] = Form(None),
     engine: Literal["auto", "openai", "free"] = Form("auto"),
@@ -327,6 +356,7 @@ async def start_dubbing_from_file(
     voice_pitch: str = Form("auto"),
     voice_volume: str = Form("auto"),
     force_new: bool = Form(False),
+    manual_translation: bool = Form(False),
 ):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file uploaded")
@@ -336,7 +366,10 @@ async def start_dubbing_from_file(
         options = EngineOptions(engine=engine, api_key=api_key, model=model, base_url=base_url)
         effects = VideoRenderOptions(add_logo=add_logo, logo_id=logo_id, burn_subtitles=burn_subtitles,
                                      blur_chinese_subtitles=blur_chinese_subtitles, blur_x=blur_x,
-                                     blur_y=blur_y, blur_width=blur_width, blur_height=blur_height)
+                                     blur_y=blur_y, blur_width=blur_width, blur_height=blur_height,
+                                     blur_corner=blur_corner, corner_blur_x=corner_blur_x,
+                                     corner_blur_y=corner_blur_y, corner_blur_width=corner_blur_width,
+                                     corner_blur_height=corner_blur_height)
     except ValidationError:
         raise HTTPException(status_code=422, detail="Invalid translation or video effect settings")
     upload_dir = STORAGE_UPLOADS / uuid.uuid4().hex
@@ -348,6 +381,7 @@ async def start_dubbing_from_file(
         sub_path_str = str(sub_dest)
 
     worker_options = dict(is_url=False, voice_type=voice_type, tone=tone,
+                          manual_translation=manual_translation,
                           audio_mode=audio_mode, burn_subtitles=burn_subtitles,
                           render_options=effects.render_values(), max_duration=max_duration,
                           engine_name=options.engine, model=options.model, base_url=options.base_url,
@@ -385,6 +419,7 @@ async def start_dubbing_from_file(
         engine_name=options.engine,
         model=options.model,
         base_url=options.base_url,
+        manual_translation=manual_translation,
         subtitle_file_path=sub_path_str,
         voice_rate=voice_rate,
         voice_pitch=voice_pitch,
@@ -400,14 +435,18 @@ async def list_video_jobs(recent_limit: int = Query(30, ge=0, le=100)):
     active_statuses = ACTIVE_STATUSES
     jobs = sorted(list(pipeline.JOBS.values()), key=lambda job: job.get("created_at", 0), reverse=True)
     active = [job for job in jobs if job.get("status") in active_statuses]
-    paused = [job for job in jobs if job.get("status") == "paused"]
-    recent = [job for job in jobs if job.get("status") not in active_statuses | {"paused"}][:recent_limit]
+    paused = [job for job in jobs if job.get("status") in {"paused", "awaiting_translation"}]
+    recent = [job for job in jobs if job.get("status") not in active_statuses | {"paused", "awaiting_translation"}][:recent_limit]
     summaries = []
     for job in active + paused + recent:
         summary = {field: job.get(field) for field in (
             "id", "title", "status", "progress", "stage", "error", "created_at",
         )}
         summary["steps"] = job_steps(job)
+        summary.update(translation_summary(job.get("segments") or []))
+        summary.update(voice_summary(job.get("segments") or []))
+        summary.update(audio_mix=saved_audio_mix(job), audio_mix_locked=audio_mix_locked(job),
+                       needs_audio_remix=bool(job.get("needs_audio_remix")))
         result = job.get("result") or {}
         if job.get("status") == "completed":
             for field, path_field in (("download_url", "dubbed_video_path"), ("srt_url", "srt_path")):
@@ -429,8 +468,147 @@ async def check_pipeline_status(job_id: str, summary: bool = False):
     if summary:
         fields = ("id", "status", "progress", "stage", "title", "run_id", "error", "fallback_count", "pipeline_phase")
         return {**{field: job.get(field) for field in fields}, "segments_count": len(job.get("segments", [])),
+                **translation_summary(job.get("segments") or []), **voice_summary(job.get("segments") or []),
                 "step_states": step_states(job)}
     return {**job, "steps": job_steps(job)}
+
+
+@router.get("/job/{job_id}/source-video")
+async def preview_source_video(job_id: str):
+    """Preview the saved source so blur placement is independent of previous exports."""
+    job = get_job_status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    source = job.get("video_path")
+    if not source or not Path(source).is_file():
+        raise HTTPException(status_code=404, detail="Source video is not available yet")
+    return FileResponse(source)
+
+
+@router.patch("/job/{job_id}/audio-mix")
+async def update_job_audio_mix(job_id: str, req: AudioMixSettings):
+    """Save levels without restarting speech, translation, or voice generation."""
+    if pipeline.RESETTING:
+        raise HTTPException(status_code=409, detail="Task caches are being cleared. Try again shortly.")
+    job = get_job_status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if audio_mix_locked(job):
+        raise HTTPException(status_code=409, detail="The final video is rendering. Change audio after it finishes, or pause it first.")
+    updates = req.model_dump(exclude_unset=True)
+    mix = AudioMixSettings(**{**saved_audio_mix(job), **updates}).model_dump()
+    if mix != saved_audio_mix(job):
+        job["audio_mix"] = mix
+        job["needs_audio_remix"] = bool(job.get("result"))
+        _save_job(job_id)
+    return {"id": job_id, "audio_mix": mix, "audio_mix_locked": False,
+            "needs_audio_remix": bool(job.get("needs_audio_remix"))}
+
+
+class ManualTranslationRequest(BaseModel):
+    batch: int = Field(ge=0)
+    source_fingerprint: str = Field(min_length=64, max_length=64)
+    text: str = Field(min_length=1, max_length=1_000_000)
+
+
+class MissingTranslationRequest(BaseModel):
+    source_fingerprint: str = Field(min_length=64, max_length=64)
+    missing_fingerprint: str = Field(min_length=64, max_length=64)
+    text: str = Field(min_length=1, max_length=1_000_000)
+
+
+def _manual_job(job_id):
+    job = get_job_status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@router.get("/job/{job_id}/manual-translation")
+async def get_manual_translation(job_id: str, batch: int = Query(0, ge=0)):
+    from ..video.manual_translation import translation_details
+    try:
+        return translation_details(_manual_job(job_id), batch)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@router.get("/job/{job_id}/missing-translations")
+async def get_missing_translations(job_id: str):
+    from ..video.manual_translation import missing_translation_details
+    try:
+        return missing_translation_details(_manual_job(job_id))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@router.post("/job/{job_id}/missing-translations")
+async def repair_missing_translations(job_id: str, req: MissingTranslationRequest):
+    from ..video.manual_translation import require_idle, apply_missing_translation
+    from ..video.resources import resource_slot
+    async with resource_slot(f"job_control:{job_id}", 1):
+        job = _manual_job(job_id)
+        try:
+            require_idle(job, pipeline.RUNNING_JOBS)
+            result = apply_missing_translation(job, req.text, req.source_fingerprint, req.missing_fingerprint)
+            _save_job(job_id)
+            return result
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error))
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+
+
+@router.get("/job/{job_id}/transcript.txt")
+async def download_original_dialogue(job_id: str, batch: Optional[int] = Query(None, ge=0)):
+    from ..video.manual_translation import batch_rows, numbered_text, source_rows
+    job = _manual_job(job_id)
+    try:
+        rows = source_rows(job) if batch is None else batch_rows(job, batch)
+        if not rows:
+            raise ValueError("No extracted dialogue yet")
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    suffix = "" if batch is None else f"_batch_{batch + 1}"
+    return PlainTextResponse(numbered_text(rows) + "\n", headers={
+        "Content-Disposition": f'attachment; filename="original_{job_id}{suffix}.txt"'
+    })
+
+
+@router.post("/job/{job_id}/manual-mode")
+async def enable_manual_translation(job_id: str):
+    from ..video.manual_translation import require_idle, wait_for_manual_translation, translation_details
+    from ..video.resources import resource_slot
+    async with resource_slot(f"job_control:{job_id}", 1):
+        job = _manual_job(job_id)
+        try:
+            require_idle(job, pipeline.RUNNING_JOBS)
+            if not job.get("segments"):
+                raise ValueError("Extract the original dialogue before switching a saved job to manual translation.")
+            wait_for_manual_translation(job)
+            _save_job(job_id)
+            return translation_details(job)
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error))
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+
+
+@router.post("/job/{job_id}/manual-translation")
+async def import_manual_translation(job_id: str, req: ManualTranslationRequest):
+    from ..video.manual_translation import require_idle, apply_translation
+    from ..video.resources import resource_slot
+    async with resource_slot(f"job_control:{job_id}", 1):
+        job = _manual_job(job_id)
+        try:
+            require_idle(job, pipeline.RUNNING_JOBS)
+            result = apply_translation(job, req.batch, req.text, req.source_fingerprint)
+            _save_job(job_id)
+            return result
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error))
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error))
 
 
 @router.post("/job/{job_id}/pause")
@@ -512,6 +690,8 @@ async def update_job_segments(job_id: str, req: SegmentUpdateRequest):
     job = get_job_status(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") in ACTIVE_STATUSES or job_id in pipeline.RUNNING_JOBS:
+        raise HTTPException(status_code=409, detail="Pause this task before saving dialogue edits. Generated voices are still being saved.")
 
     _apply_segment_updates(job, req.segments)
     _save_job(job_id)
@@ -549,6 +729,10 @@ async def preview_single_segment_audio(job_id: str, req: SegmentPreviewRequest):
                 seg["audio_file"] = str(out_file)
                 seg["voice_type"] = req.voice_type
                 seg["translation"] = clean_text
+                seg["audio_source"] = "khmer_tts"
+                for key in ("tts_error", "generation_warning", "review_required", "fallback_subtitle", "_dirty"):
+                    seg.pop(key, None)
+                job["needs_rerender"] = True
                 break
         _save_job(job_id)
 
@@ -697,6 +881,15 @@ async def _rerender_saved_video(job_id: str, req: JobRerenderRequest):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    if "bg_volume" in req.model_fields_set and req.bg_volume is not None:
+        volume = req.bg_volume
+        mix = saved_audio_mix(job)
+        mix.update(original_volume=15 if volume < 0 else max(0, min(100, round(volume * 100))),
+                   duck_original=volume < 0)
+        if mix != saved_audio_mix(job) and job.get("result"):
+            job["needs_audio_remix"] = True
+        job["audio_mix"] = AudioMixSettings(**mix).model_dump()
+
     video_path = job.get("video_path")
     if not video_path or not Path(video_path).exists():
         # Fallback to storage/downloads
@@ -718,6 +911,15 @@ async def _rerender_saved_video(job_id: str, req: JobRerenderRequest):
         job.update(progress=0, run_id=uuid.uuid4().hex)
     segments = job["segments"]
     pending = segments if req.retranslate else missing_translations(segments)
+    if job.get("manual_translation") or req.manual_translation:
+        job["manual_translation"] = True
+        job.setdefault("request_options", {})["manual_translation"] = True
+        if pending:
+            from ..video.manual_translation import wait_for_manual_translation
+            wait_for_manual_translation(job)
+            _save_job(job_id)
+            raise HTTPException(status_code=409, detail="Finish importing Khmer translations in Processing details before generating voices.")
+        pending = []
     if pending:
         from ..engines.dialogue_translator import translate_dialogue_segments, FLOW
         previous = {seg["id"]: seg.get("translation") for seg in segments}
@@ -758,9 +960,11 @@ async def _rerender_saved_video(job_id: str, req: JobRerenderRequest):
 async def _finish_job_render(job_id, job, video_path, req):
     """Resume voice synthesis in parallel, retaining matching cached voice clips."""
     segments = job["segments"]
+    if any(seg.get("audio_source") == "original_fallback" or seg.get("tts_error") for seg in segments):
+        job.update(needs_rerender=True, output_filename=f"dubbed_{job_id}_voices_{uuid.uuid4().hex[:8]}.mp4")
     from ..video.recovery import prepare_dialogue_audio
     job.update(status="processing", stage="Preparing voice clips and recovering failed cues",
-               progress=max(job.get("progress", 0), 70), error=None)
+               progress=max(job.get("progress", 0), 70), error=None, pipeline_phase="generating_voices")
     mark_step(job, "voices", "partial")
     _save_job(job_id)
 
@@ -775,6 +979,8 @@ async def _finish_job_render(job_id, job, video_path, req):
         voice_type=job.get("voice_type", "male"), rate=req.voice_rate,
         pitch=req.voice_pitch, volume=req.voice_volume, on_progress=progress,
         synthesize=synthesize_segments,
+        allow_translation_recovery=not (job.get("manual_translation") or req.manual_translation),
+        allow_original_fallback=False,
     )
     job.update(recovery)
     if not missing_translations(segments):
@@ -782,17 +988,21 @@ async def _finish_job_render(job_id, job, video_path, req):
     mark_step(job, "voices", "complete")
     mark_step(job, "render", "partial")
 
+    if job.get("needs_audio_remix"):
+        job["output_filename"] = f"dubbed_{job_id}_mix_{uuid.uuid4().hex[:8]}.mp4"
     job.update(stage="Mixing audio and rendering video", progress=max(job.get("progress", 0), 85), pipeline_phase="rendering")
     _save_job(job_id)
     dub_result = await assemble_dubbed_video(
         video_path=video_path, segments=segments, output_filename=job.get("output_filename") or f"dubbed_{job_id}.mp4",
         audio_mode=req.audio_mode, bg_volume=req.bg_volume,
         burn_subtitles=req.burn_subtitles, render_options=req.render_values(),
+        **({"audio_mix": dict(job["audio_mix"])} if job.get("audio_mix") else {}),
     )
     dub_result.update(recovery)
     job["result"] = dub_result
     job["render_options"] = req.render_values()
     job["needs_rerender"] = False
+    job["needs_audio_remix"] = False
     stage = "Complete" if not recovery["fallback_count"] else f"Complete — {recovery['fallback_count']} cues need review"
     job.update(status="completed", progress=100, stage=stage, error=None, pipeline_phase="completed")
     mark_step(job, "render", "complete")
@@ -813,10 +1023,19 @@ async def resume_saved_job(job_id: str, req: JobRerenderRequest, background_task
         raise HTTPException(status_code=409, detail="This job is already running")
     saved = job.get("request_options") or {}
     values = {"audio_mode": saved.get("audio_mode", "replace"), "engine": saved.get("engine_name", "auto"),
+              "manual_translation": bool(job.get("manual_translation") or saved.get("manual_translation")),
               "model": saved.get("model"), "base_url": saved.get("base_url"),
               **(job.get("render_options") or {}), **job.get("voice_settings", {}),
               **req.model_dump(exclude_unset=True)}
     resume_request = JobRerenderRequest(**values)
+    resume_request.manual_translation = bool(resume_request.manual_translation or job.get("manual_translation") or saved.get("manual_translation"))
+    if resume_request.manual_translation:
+        if resume_request.retranslate:
+            raise HTTPException(status_code=409, detail="Manual translation jobs cannot request automatic retranslation.")
+        if job.get("segments") and missing_translations(req.segments if req.segments is not None else job["segments"]):
+            raise HTTPException(status_code=409, detail="Finish importing Khmer translations in Processing details before generating voices.")
+        job["manual_translation"] = True
+        job.setdefault("request_options", {})["manual_translation"] = True
 
     async def resume():
         try:
@@ -825,10 +1044,12 @@ async def resume_saved_job(job_id: str, req: JobRerenderRequest, background_task
                     "is_url", "voice_type", "tone", "audio_mode", "burn_subtitles", "render_options",
                     "max_duration", "model", "base_url", "subtitle_file_path", "voice_rate", "voice_pitch", "voice_volume",
                     "include_english_reference",
+                    "manual_translation",
                 }}
                 worker_options.setdefault("is_url", str(job.get("input", "")).startswith(("http://", "https://")))
                 worker_options.update(engine_name=resume_request.engine, api_key=resume_request.api_key,
-                                      model=resume_request.model, base_url=resume_request.base_url)
+                                      model=resume_request.model, base_url=resume_request.base_url,
+                                      manual_translation=resume_request.manual_translation)
                 await run_video_dubbing_pipeline(job_id=job_id, video_source=job.get("input", ""), **worker_options)
             else:
                 async with pipeline.video_job_slot(job_id) as acquired:
@@ -867,7 +1088,7 @@ async def update_job_visuals(job_id: str, req: VideoRenderOptions, background_ta
         raise HTTPException(status_code=404, detail="Job not found")
     if job.get("status") in ACTIVE_STATUSES or job_id in pipeline.RUNNING_JOBS:
         raise HTTPException(status_code=409, detail="This job is already running")
-    if job.get("needs_rerender") or any(seg.get("_dirty") for seg in job.get("segments", [])):
+    if job.get("needs_rerender") or job.get("needs_audio_remix") or any(seg.get("_dirty") or seg.get("tts_error") or seg.get("audio_source") == "original_fallback" for seg in job.get("segments", [])):
         raise HTTPException(status_code=409, detail="Re-render edited dialogue before applying visual-only changes")
     source = job.get("video_path")
     completed = (job.get("result") or {}).get("dubbed_video_path")
@@ -879,7 +1100,7 @@ async def update_job_visuals(job_id: str, req: VideoRenderOptions, background_ta
             async with pipeline.video_job_slot(job_id) as acquired:
                 if not acquired:
                     return
-                job.update(stage="Applying visual effects to the completed video", progress=85)
+                job.update(stage="Applying visual effects to the completed video", progress=85, pipeline_phase="rendering")
                 _save_job(job_id)
                 result = await assemble_dubbed_video(
                     video_path=source, segments=job.get("segments", []),
@@ -887,7 +1108,7 @@ async def update_job_visuals(job_id: str, req: VideoRenderOptions, background_ta
                     render_options=req.render_values(), prepared_audio_path=completed,
                 )
                 job.update(result=result, render_options=req.render_values(), status="completed",
-                           stage="Complete", progress=100, error=None)
+                           stage="Complete", progress=100, error=None, pipeline_phase="completed")
         except Exception as error:
             job.update(status="failed", stage="Failed", error=str(error))
         _save_job(job_id)
